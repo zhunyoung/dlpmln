@@ -1,0 +1,18 @@
+from dlpmln import deeplpmln
+
+
+dprogram = '''
+img(i1). img(i2).
+
+addition(A,B,N) :- digit(A,1,N1), digit(B,1,N2), N=N1+N2.
+
+nn(m(X,1), digit, [0,1,2,3,4,5,6,7,8,9]) :- img(X).
+'''
+
+# data = [{'i1': }]
+
+m = 0
+
+dlpmlnObj = deeplpmln(dprogram, [m])
+
+print(dlpmlnObj.mvpp)
