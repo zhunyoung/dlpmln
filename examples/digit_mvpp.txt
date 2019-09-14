@@ -1,0 +1,4 @@
+@m(i1,0)[0] digit(i1, 0, 0); @m(i1,0)[1] digit(i1, 0, 1); @m(i1,0)[2] digit(i1, 0, 2); @m(i1,0)[3] digit(i1, 0, 3); @m(i1,0)[4] digit(i1, 0, 4); @m(i1,0)[5] digit(i1, 0, 5); @m(i1,0)[6] digit(i1, 0, 6); @m(i1,0)[7] digit(i1, 0, 7); @m(i1,0)[8] digit(i1, 0, 8); @m(i1,0)[9] digit(i1, 0, 9).
+@m(i2,0)[0] digit(i2, 0, 0); @m(i2,0)[1] digit(i2, 0, 1); @m(i2,0)[2] digit(i2, 0, 2); @m(i2,0)[3] digit(i2, 0, 3); @m(i2,0)[4] digit(i2, 0, 4); @m(i2,0)[5] digit(i2, 0, 5); @m(i2,0)[6] digit(i2, 0, 6); @m(i2,0)[7] digit(i2, 0, 7); @m(i2,0)[8] digit(i2, 0, 8); @m(i2,0)[9] digit(i2, 0, 9).
+img(i1). img(i2).
+addition(A,B,N) :- digit(A,1,N1), digit(B,1,N2), N=N1+N2.
