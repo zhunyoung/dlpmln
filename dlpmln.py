@@ -1,7 +1,8 @@
 import re
 import sys
-
+from klpmln import MVPP
 import clingo
+import sys
 
 class deeplpmln(object):
     def __init__(self, dprogram, functions):
@@ -76,8 +77,51 @@ class deeplpmln(object):
         #             lpmln += line.strip() + "\n"
         # return lpmln, program_wo_input_rules, preds
     
-    def learn(self):
-        pass
+
+    # data is a dictionary, where the keys are the name of neural network and the values are the corresponding input data. 
+    # obs is a list, in which each obs_i is relative to one data. 
+    # optimizer is also a dictionary, where the keys are the name of neural network and the values are the corresponding optimizer. 
+    def learn(self, data, obs, optimizer, data_length):
+        
+        # add one attribut, type, to self.func. 
+        # since currently we don't have this att, I set the type of each functions be 10 in digit example, in general func.type = k
+        self.nn_type = {}
+        for func_name in self.functions.keys():
+            self.nn_type[func_name] = 10
+        
+        # get the mvpp program by self.mvpp, so far self.mvpp is a string
+        dmvpp = MVPP(self.mvpp)
+        
+        # get the parameters by the output of neural networks.
+        
+        for dataIdx in range(data_length):
+            probs = []
+            output = []
+            for func in self.functions:
+               
+                output_func = self.functions[func](next(iter(data[func]))[0])
+                output.append(output_func)
+                if self.nn_type[func]> 2:
+                    probs.append(output_func)
+                else:
+                    for para in output_func:
+                        probs.append([para, 1-para])
+
+            # set the values of parameters of mvpp
+            dmvpp.parameters = probs
+            gradients = dmvpp.gradients_one_obs(obs[dataIdx])
+            # if device.type == 'cuda':
+            #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
+            # else:
+            #     grad_by_prob = -1 * torch.FloatTensor(gradients)
+
+            grad_by_prob = -1 * torch.FloatTensor(gradients)
+            
+            for outIdx, out in enumerate(output):
+                out.backward(grad_by_prob[outIdx], retain_graph=True)
+                optimizer[self.functions[outIdx].__name__].step()
+                optimizer[self.functions[outIdx].__name__].zero_grad()
+        print("done!")
 
     def dataloader_error_checker(self, pred2data, preds):
         # we check for each experiment
