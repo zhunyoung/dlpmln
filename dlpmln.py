@@ -5,7 +5,7 @@ import clingo
 import sys
 
 class deeplpmln(object):
-    def __init__(self, dprogram, functions):
+    def __init__(self, dprogram, functions, optimizer):
         '''
         @param dprogram: a string for a DeepLPMLN program
         @param functions: a list of neural networks
@@ -14,6 +14,7 @@ class deeplpmln(object):
         self.functions = dict()
         for function in functions:
             self.functions[function.__name__] = function
+        self.optimizer = optimizer
         self.mvpp = self.parse()
 
     @staticmethod
@@ -39,7 +40,8 @@ class deeplpmln(object):
             for i in range(e):
                 rule = ''
                 for j in range(k):
-                    rule += '@{}({},{})[{}] {}({}, {}, {}); '.format(model, vin, i, j, pred, vin, i, domain[j])
+                    rule += '@0.0 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
+                    # rule += '@{}({},{})[{}] {}({}, {}, {}); '.format(model, vin, i, j, pred, vin, i, domain[j])
                 mvppRules.append(rule[:-2]+'.')
         else:
             print('Error: the number of element in the domain %s is less than 2' % domain)
@@ -76,7 +78,55 @@ class deeplpmln(object):
         #         if not line.startswith("nn"):
         #             lpmln += line.strip() + "\n"
         # return lpmln, program_wo_input_rules, preds
-    
+    def learn1(self, dataList, obsList, epoch, lr):
+
+        # add one attribut, type, to self.func.     # since currently we don't have this att, I set the type of each functions be 10 in digit example, in general func.type = k
+        self.k = {}
+        self.e = {}
+        for func_name in self.functions:
+            self.functions[func_name].train()
+            self.k[func_name]=10
+            self.e[func_name] = 1
+        
+        # get the mvpp program by self.mvpp, so far self.mvpp is a string
+        dmvpp = MVPP(self.mvpp)
+        
+        # get the parameters by the output of neural networks.
+        assert(len(dataList) == len(obsList) 'Error: the length of dataList does not equal to the length of obsList')
+        for epochIdx in range(epoch):
+            for dataIdx, data in enumerate(dataList):
+                output = []
+                probs = []
+                # data is a dictionary to map nn's name to its input
+                for nnIdx, nn in enumerate(data): 
+                    # nn is the name of the neural network
+                    for termIdx, term in data[nn]:
+                        # data[nn] is a dictionary to map term to input
+                    output_func = self.functions[nn](data[nn][term])
+                    output.append(output_func)
+
+                    if self.k[func]> 2:
+                        probs.append(output_func[:self.k[func]])
+                    else:
+                        for para in output_func:
+                            # probs.append([para])
+                            probs.append([para, 1-para])
+
+                # set the values of parameters of mvpp
+                dmvpp.parameters = probs
+                gradients = dmvpp.gradients_one_obs(obs[dataIdx])
+                # if device.type == 'cuda':
+                #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
+                # else:
+                #     grad_by_prob = -1 * torch.FloatTensor(gradients)
+
+                grad_by_prob = -1 * torch.FloatTensor(gradients)
+                
+                for outIdx, out in enumerate(output):
+                    out.backward(grad_by_prob[outIdx], retain_graph=True)
+                    self.optimizer[self.functions[outIdx].__name__].step()
+                    self.optimizer[self.functions[outIdx].__name__].zero_grad()
+            print("done!")    
 
     # data is a dictionary, where the keys are the name of neural network and the values are the corresponding input data. 
     # obs is a list, in which each obs_i is relative to one data. 
