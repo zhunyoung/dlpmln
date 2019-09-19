@@ -3,9 +3,14 @@ import sys
 from klpmln import MVPP
 import clingo
 import sys
+import torch
+import numpy as np
 
-class deeplpmln(object):
-    def __init__(self, dprogram, nn, optimizer):
+
+
+class DeepLPMLN(object):
+    def __init__(self, dprogram, functions,optimizer):
+
         """
         @param dprogram: a string for a DeepLPMLN program
         @param functions: a list of neural networks
@@ -14,8 +19,8 @@ class deeplpmln(object):
         self.k = {}
         self.e = {}
         self.nnOutputs = {}
-        self.nn = nn
-        self.optimizer = optimizer 
+        self.functions = functions
+        self.optimizer = optimizer
         self.mvpp = self.parse() # note that self.mvpp is just a string instead of MVPP object
         
 
@@ -77,54 +82,67 @@ class deeplpmln(object):
         
     def learn1(self, dataList, obsList, epoch):
 
-        # add one attribut, type, to self.func.     # since currently we don't have this att, I set the type of each functions be 10 in digit example, in general func.type = k
-        self.k = {}
-        self.e = {}
-        for func_name in self.functions:
-            self.functions[func_name].train()
-            self.k[func_name]=10
-            self.e[func_name] = 1
-        
-        # get the mvpp program by self.mvpp, so far self.mvpp is a string
-        dmvpp = MVPP(self.mvpp)
-        
-        # get the parameters by the output of neural networks.
-        assert(len(dataList) == len(obsList) 'Error: the length of dataList does not equal to the length of obsList')
-        for epochIdx in range(epoch):
-            for dataIdx, data in enumerate(dataList):
-                output = []
-                probs = []
-                # data is a dictionary to map nn's name to its input
-                for nnIdx, nn in enumerate(data): 
-                    # nn is the name of the neural network
-                    for termIdx, term in data[nn]:
+            """
+            @param dataList: a list of dictionaries, where each dictionary mapps terms to tensors/np-arrays
+            @param obsList: a list of strings, where each string is a set of constraints denoting an observation
+            @param epoch: an integer denoting the number of epochs
+
+            """
+            assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
+
+            # get the mvpp program by self.mvpp, so far self.mvpp is a string
+            dmvpp = MVPP(self.mvpp)
+            for func in self.functions:
+                self.functions[func].train()
+
+            # get the parameters by the output of neural networks.
+            for epochIdx in range(epoch):
+                for dataIdx, data in enumerate(dataList):
+                    output = []
+                    probs = []
+                    # data is a dictionary to map nn's name to its input
+                    for nnIdx, nn in enumerate(data): 
+                        # nn is the name of the neural network
+                        for termIdx, term in enumerate(data[nn]):
                         # data[nn] is a dictionary to map term to input
-                    output_func = self.functions[nn](data[nn][term])
-                    output.append(output_func)
+                            # print(data[nn])
+                            # print(term)
+                            # # print(data[nn][term])
+                            # sys.exit()
+                            output_func = self.functions[nn](data[nn][term])
+                            output.append(output_func)
+                            output_func = output_func.tolist()
+                            # print(output_func)
+                            # sys.exit()
 
-                    if self.k[func]> 2:
-                        probs.append(output_func[:self.k[func]])
-                    else:
-                        for para in output_func:
-                            # probs.append([para])
-                            probs.append([para, 1-para])
+                            if self.k[func]> 2:
+                                probs.append(output_func[:self.k[func]][0])
+                    
+                            else:
+                                for para in output_func:
+                                    # probs.append([para])
+                                    probs.append([para, 1-para])
+                            # we store the each nn's output to nnOutputs attributes.
+                            self.nnOutputs[func][term] = probs[-1]
 
-                # set the values of parameters of mvpp
-                dmvpp.parameters = probs
-                gradients = dmvpp.gradients_one_obs(obs[dataIdx])
-                # if device.type == 'cuda':
-                #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
-                # else:
-                #     grad_by_prob = -1 * torch.FloatTensor(gradients)
+                    # we assume all parameters of mvpp coming from the neural network.
+                    # set the values of parameters of mvpp.
+                    
+                    dmvpp.parameters = probs
+                    gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
+                    # if device.type == 'cuda':
+                    #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
+                    # else:
+                    #     grad_by_prob = -1 * torch.FloatTensor(gradients)
 
-                grad_by_prob = -1 * torch.FloatTensor(gradients)
-                
-                for outIdx, out in enumerate(output):
-                    out.backward(grad_by_prob[outIdx], retain_graph=True)
-                for opt in self.optimizer:
-                    opt.step()
-                    opt.zero_grad()
-            print("done!")    
+                    grad_by_prob = -1 * torch.FloatTensor(gradients)
+
+                    for outIdx, out in enumerate(output):
+                        out.backward(np.reshape(grad_by_prob[outIdx],(1,10)), retain_graph=True)
+                    for opt in self.optimizer:
+                        self.optimizer[opt].step()
+                        self.optimizer[opt].zero_grad()
+                print("done!")    
 
     # data is a dictionary, where the keys are the name of neural network and the values are the corresponding input data. 
     # obs is a list, in which each obs_i is relative to one data. 
