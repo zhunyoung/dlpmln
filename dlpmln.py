@@ -5,20 +5,25 @@ import clingo
 import sys
 
 class deeplpmln(object):
-    def __init__(self, dprogram, functions, optimizer):
-        '''
+    def __init__(self, dprogram, nn, optimizer):
+        """
         @param dprogram: a string for a DeepLPMLN program
         @param functions: a list of neural networks
-        '''
+        """
         self.dprogram = dprogram
-        self.functions = dict()
-        for function in functions:
-            self.functions[function.__name__] = function
-        self.optimizer = optimizer
-        self.mvpp = self.parse()
+        self.k = {}
+        self.e = {}
+        self.nnOutputs = {}
+        self.nn = nn
+        self.optimizer = optimizer 
+        self.mvpp = self.parse() # note that self.mvpp is just a string instead of MVPP object
+        
 
-    @staticmethod
-    def nnAtom2MVPPrules(nnAtom):
+    def nnAtom2MVPPrules(self, nnAtom, countIdx=False):
+        """
+        @param nnAtom: a string of a neural atom
+        @param countIdx: a Boolean value denoting whether we count the index for the value of m(vin, i)[j]
+        """
         mvppRules = []
 
         # STEP 1: obtain all information
@@ -30,6 +35,12 @@ class deeplpmln(object):
         pred = out.group(2)
         domain = out.group(3).replace('(', '').replace(')','').split(',')
         k = len(domain)
+        self.k[model] = k
+        self.e[model] = e
+        if model not in self.nnOutputs:
+            self.nnOutputs[model] = {}
+        if vin not in self.nnOutputs[model]:
+            self.nnOutputs[model][vin] = None
 
         # STEP 2: generate MVPP rules
         # we have different translations when k = 2 or when k > 2
@@ -40,8 +51,10 @@ class deeplpmln(object):
             for i in range(e):
                 rule = ''
                 for j in range(k):
-                    rule += '@0.0 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
-                    # rule += '@{}({},{})[{}] {}({}, {}, {}); '.format(model, vin, i, j, pred, vin, i, domain[j])
+                    if countIdx:
+                        rule += '@{}({},{})[{}] {}({}, {}, {}); '.format(model, vin, i, j, pred, vin, i, domain[j])
+                    else:
+                        rule += '@0.0 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
                 mvppRules.append(rule[:-2]+'.')
         else:
             print('Error: the number of element in the domain %s is less than 2' % domain)
@@ -61,24 +74,8 @@ class deeplpmln(object):
         lines = [line.strip() for line in self.dprogram.split('\n') if line and not line.startswith('nn')]
         # return mvppRules + lines
         return '\n'.join(mvppRules + lines)
-        # lines = [self.neuralRuleToMVPPRule(rule) for rule in lines]
-
-        # return mvppRules, lines
-        # preds = []
-        # program = self.dprogram
-        # program_wo_input_rules = ""
-        # lpmln = ""
-        # lines = program.readlines()
-        # for line in lines:
-        #     if "@input" in line:
-        #         pred ,arity = line.strip()[:-1].split(" ")[1].split("/")
-        #         preds.append((pred, int(arity)))
-        #     else:
-        #         program_wo_input_rules += line.strip() + "\n"
-        #         if not line.startswith("nn"):
-        #             lpmln += line.strip() + "\n"
-        # return lpmln, program_wo_input_rules, preds
-    def learn1(self, dataList, obsList, epoch, lr):
+        
+    def learn1(self, dataList, obsList, epoch):
 
         # add one attribut, type, to self.func.     # since currently we don't have this att, I set the type of each functions be 10 in digit example, in general func.type = k
         self.k = {}
@@ -124,8 +121,9 @@ class deeplpmln(object):
                 
                 for outIdx, out in enumerate(output):
                     out.backward(grad_by_prob[outIdx], retain_graph=True)
-                    self.optimizer[self.functions[outIdx].__name__].step()
-                    self.optimizer[self.functions[outIdx].__name__].zero_grad()
+                for opt in self.optimizer:
+                    opt.step()
+                    opt.zero_grad()
             print("done!")    
 
     # data is a dictionary, where the keys are the name of neural network and the values are the corresponding input data. 
