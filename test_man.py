@@ -45,10 +45,10 @@ optimizer = {'m':torch.optim.Adam(m.parameters(), lr=0.001)}
 obs = [""]
 
 data_m = datasets.MNIST('../data', train=True, download=True,
-                       transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ]))
+					   transform=transforms.Compose([
+						   transforms.ToTensor(),
+						   transforms.Normalize((0.1307,), (0.3081,))
+					   ]))
 
 dataList = []
 obstxt = ""
@@ -62,15 +62,19 @@ for dataIdx, data in enumerate(train_loader):
 	obsList.append("addition(i1, i2, {}).".format(data[1][0]+data[1][1]))
 	obstxt += "addition(i1, i2, {}).\n".format(data[1][0]+data[1][1])
 	obstxt += "#evidence\n"
-	if dataIdx > 10:
-		break
+	# if dataIdx == 10:
+	# 	break
+	
 with open("evidence.txt", "w") as f:
 	f.write(obstxt)
 
 
 dlpmlnObj = DeepLPMLN(dprogram, nnDic, optimizer)
 
-dlpmlnObj.learn1(dataList, obsList, 1)
+for i in range(10):
+	print(i)
+	dlpmlnObj.learn1(dataList, obsList, 1)
 
+	dlpmlnObj.test_nn("m", test_loader)
 
 # print(dlpmlnObj.mvpp)

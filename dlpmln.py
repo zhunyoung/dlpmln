@@ -59,7 +59,7 @@ class DeepLPMLN(object):
                     if countIdx:
                         rule += '@{}({},{})[{}] {}({}, {}, {}); '.format(model, vin, i, j, pred, vin, i, domain[j])
                     else:
-                        rule += '@0.0 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
+                        rule += '@0.1 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
                 mvppRules.append(rule[:-2]+'.')
         else:
             print('Error: the number of element in the domain %s is less than 2' % domain)
@@ -101,9 +101,9 @@ class DeepLPMLN(object):
                     output = []
                     probs = []
                     # data is a dictionary to map nn's name to its input
-                    for nnIdx, nn in enumerate(data): 
+                    for nn in data: 
                         # nn is the name of the neural network
-                        for termIdx, term in enumerate(data[nn]):
+                        for term in data[nn]:
                         # data[nn] is a dictionary to map term to input
                             # print(data[nn])
                             # print(term)
@@ -111,23 +111,26 @@ class DeepLPMLN(object):
                             # sys.exit()
                             output_func = self.functions[nn](data[nn][term])
                             output.append(output_func)
-                            output_func = output_func.tolist()
+                            output_func = output_func.view(self.k[func]).tolist()
+
                             # print(output_func)
                             # sys.exit()
 
                             if self.k[func]> 2:
-                                probs.append(output_func[:self.k[func]][0])
+                                # probs.append(output_func[,:self.k[func]][0])
+                                probs.append(output_func)
                     
                             else:
                                 for para in output_func:
                                     # probs.append([para])
                                     probs.append([para, 1-para])
                             # we store the each nn's output to nnOutputs attributes.
+                            
                             self.nnOutputs[func][term] = probs[-1]
 
                     # we assume all parameters of mvpp coming from the neural network.
                     # set the values of parameters of mvpp.
-                    
+                    # print(probs)
                     dmvpp.parameters = probs
                     gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
                     # if device.type == 'cuda':
@@ -144,51 +147,27 @@ class DeepLPMLN(object):
                         self.optimizer[opt].zero_grad()
                 print("done!")    
 
-    # data is a dictionary, where the keys are the name of neural network and the values are the corresponding input data. 
-    # obs is a list, in which each obs_i is relative to one data. 
-    # optimizer is also a dictionary, where the keys are the name of neural network and the values are the corresponding optimizer. 
-    def learn(self, data, obs, optimizer, data_length):
+    def test_nn(self, nn, test_loader):
         
-        # add one attribut, type, to self.func. 
-        # since currently we don't have this att, I set the type of each functions be 10 in digit example, in general func.type = k
-        self.nn_type = {}
-        for func_name in self.functions.keys():
-            self.nn_type[func_name] = 10
+        """
+        @nn is the name of the neural network to check the accuracy. 
+        @test_loader is the input and output pairs.
+        """
+        self.functions[nn].eval()
+        # test_loss = 0
+        correct = 0
+        with torch.no_grad():
+            for data, target in test_loader:
+                # data, target = data.to(device), target.to(device)
+                output = self.functions[nn](data)
+                # test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
+                if self.k[nn] >2 :
+                    pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
+                    correct += pred.eq(target.view_as(pred)).sum().item()
+                else: 
+                    pass
+        print("Test Accuracy {:.0f}%".format(100. * correct / len(test_loader.dataset)) )
         
-        # get the mvpp program by self.mvpp, so far self.mvpp is a string
-        dmvpp = MVPP(self.mvpp)
-        
-        # get the parameters by the output of neural networks.
-        
-        for dataIdx in range(data_length):
-            probs = []
-            output = []
-            for func in self.functions:
-               
-                output_func = self.functions[func](next(iter(data[func]))[0])
-                output.append(output_func)
-                if self.nn_type[func]> 2:
-                    probs.append(output_func)
-                else:
-                    for para in output_func:
-                        probs.append([para, 1-para])
-
-            # set the values of parameters of mvpp
-            dmvpp.parameters = probs
-            gradients = dmvpp.gradients_one_obs(obs[dataIdx])
-            # if device.type == 'cuda':
-            #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
-            # else:
-            #     grad_by_prob = -1 * torch.FloatTensor(gradients)
-
-            grad_by_prob = -1 * torch.FloatTensor(gradients)
-            
-            for outIdx, out in enumerate(output):
-                out.backward(grad_by_prob[outIdx], retain_graph=True)
-                optimizer[self.functions[outIdx].__name__].step()
-                optimizer[self.functions[outIdx].__name__].zero_grad()
-        print("done!")
-
     def dataloader_error_checker(self, pred2data, preds):
         # we check for each experiment
         for pred,arity in preds:
