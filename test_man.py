@@ -11,7 +11,7 @@ import sys
 dprogram = '''
 img(i1). img(i2).
 
-addition(A,B,N) :- digit(A,1,N1), digit(B,1,N2), N=N1+N2.
+addition(A,B,N) :- digit(A,0,N1), digit(B,0,N2), N=N1+N2.
 
 nn(m(X,1), digit, [0,1,2,3,4,5,6,7,8,9]) :- img(X).
 '''
@@ -59,11 +59,12 @@ for dataIdx, data in enumerate(train_loader):
 	# print(data[0].shape)
 	# sys.exit()
 	dataList.append({"m":{"i1":data[0][0].view(1, 1, 28, 28), "i2":data[0][1].view(1, 1, 28, 28)}})
-	obsList.append("addition(i1, i2, {}).".format(data[1][0]+data[1][1]))
-	obstxt += "addition(i1, i2, {}).\n".format(data[1][0]+data[1][1])
-	obstxt += "#evidence\n"
-	# if dataIdx == 10:
-	# 	break
+	obsList.append(":- not addition(i1, i2, {}).".format( data[1][0]+data[1][1]))
+	if dataIdx % 1000 == 0:
+		obstxt += "addition(i1, i2, {}, {}).\n".format(data[1][0],data[1][1])
+		obstxt += "#evidence\n"
+		# if dataIdx == 10:
+		# 	break
 	
 with open("evidence.txt", "w") as f:
 	f.write(obstxt)
@@ -71,7 +72,7 @@ with open("evidence.txt", "w") as f:
 
 dlpmlnObj = DeepLPMLN(dprogram, nnDic, optimizer)
 
-for i in range(10):
+for i in range(2):
 	print(i)
 	dlpmlnObj.learn1(dataList, obsList, 1)
 

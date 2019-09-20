@@ -96,8 +96,10 @@ class DeepLPMLN(object):
                 self.functions[func].train()
 
             # get the parameters by the output of neural networks.
+            
             for epochIdx in range(epoch):
                 for dataIdx, data in enumerate(dataList):
+                    
                     output = []
                     probs = []
                     # data is a dictionary to map nn's name to its input
@@ -131,21 +133,26 @@ class DeepLPMLN(object):
                     # we assume all parameters of mvpp coming from the neural network.
                     # set the values of parameters of mvpp.
                     # print(probs)
+
                     dmvpp.parameters = probs
+                    dmvpp.normalize_probs()
                     gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
+
                     # if device.type == 'cuda':
                     #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
                     # else:
                     #     grad_by_prob = -1 * torch.FloatTensor(gradients)
 
                     grad_by_prob = -1 * torch.FloatTensor(gradients)
+                    # if count % 1000 == 0:
+                    #     print(grad_by_prob)
 
                     for outIdx, out in enumerate(output):
                         out.backward(np.reshape(grad_by_prob[outIdx],(1,10)), retain_graph=True)
                     for opt in self.optimizer:
                         self.optimizer[opt].step()
                         self.optimizer[opt].zero_grad()
-                print("done!")    
+                print("{} is done!".format(epochIdx))    
 
     def test_nn(self, nn, test_loader):
         
