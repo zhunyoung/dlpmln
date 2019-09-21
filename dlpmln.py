@@ -16,9 +16,10 @@ class DeepLPMLN(object):
         @param functions: a list of neural networks
         """
         self.dprogram = dprogram
-        self.k = {}
+        self.k = {} # k would be 1 or N (>=3); note that k=2 in theorey is implemented as k=1
         self.e = {}
         self.nnOutputs = {}
+        self.nnGradients = {}
         self.functions = functions
         self.optimizer = optimizer
         # self.mvpp is a dictionary consisting of 3 mappings: 
@@ -26,7 +27,7 @@ class DeepLPMLN(object):
         # 2. 'nnProb': a list of lists of tuples, each tuple is of the form (model, term, i, j)
         # 3. 'nnPrRuleNum': an integer denoting the number of probabilistic rules generated from NN
         self.mvpp = {'nnProb': [], 'nnPrRuleNum': 0, 'program': ''}
-        self.mvpp['program'] = self.parse()        
+        self.mvpp['program'] = self.parse()
 
     def nnAtom2MVPPrules(self, nnAtom):
         """
@@ -44,16 +45,20 @@ class DeepLPMLN(object):
         pred = out.group(2)
         domain = out.group(3).replace('(', '').replace(')','').split(',')
         k = len(domain)
+        if k == 2:
+            k = 1
         self.k[model] = k
         self.e[model] = e
         if model not in self.nnOutputs:
             self.nnOutputs[model] = {}
+            self.nnGradients[model] = {}
         if vin not in self.nnOutputs[model]:
             self.nnOutputs[model][vin] = None
+            self.nnGradients[model][vin] = None
 
         # STEP 2: generate MVPP rules
         # we have different translations when k = 2 or when k > 2
-        if k == 2:
+        if k == 1:
             for i in range(e):
                 rule = '@0.0 {}({}, {}, {}); @0.0 {}({}, {}, {}).'.format(pred, vin, i, domain[0], pred, vin, i, domain[1])
                 prob = [tuple((model, vin, i))]
@@ -110,54 +115,45 @@ class DeepLPMLN(object):
 
         # we train for epoch times of epochs
         for epochIdx in range(epoch):
-            # get the parameters by the output of neural networks
+            print('Training for epoch %d ...' % (epochIdx + 1))
+            # for each training instance in the training data
             for dataIdx, data in enumerate(dataList):
-                output = []
-                probs = []
-                # data is a dictionary to map nn's name to its input
-                for nn in data: 
-                    # nn is the name of the neural network
-                    # data[nn] is a dictionary to map term to neural network input
-                    for term in data[nn]:
-                        output_func = self.functions[nn](data[nn][term])
-                        output.append(output_func)
-                        output_func = output_func.view(self.k[func]).tolist()
+                nnOutput = {}
+                # Step 1: get the output of each neural network and initialize the gradients
+                for model in self.nnOutputs:
+                    nnOutput[model] = {}
+                    for vin in self.nnOutputs[model]:
+                        nnOutput[model][vin] = self.functions[model](data[model][vin])
+                        self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
+                        # initialize the gradients for each output
+                        self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
+                # print(self.nnOutputs)
+                # print(self.nnGradients)
 
-                        if self.k[func]> 2:
-                            # probs.append(output_func[,:self.k[func]][0])
-                            probs.append(output_func)
-                
-                        else:
-                            for para in output_func:
-                                # probs.append([para])
-                                probs.append([para, 1-para])
-                        # we store the each nn's output to nnOutputs attributes.
-                        
-                        self.nnOutputs[func][term] = probs[-1]
+                # print(self.mvpp['nnProb'])
+                # Step 2: replace the parameters in the MVPP program with nn outputs
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
 
-                # we assume all parameters of mvpp coming from the neural network.
-                # set the values of parameters of mvpp.
-                # print(probs)
-
-                dmvpp.parameters = probs
+                # Step 3: compute the gradients
                 dmvpp.normalize_probs()
                 gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
 
-                # if device.type == 'cuda':
-                #     grad_by_prob = -1 * torch.cuda.FloatTensor(gradients)
-                # else:
-                #     grad_by_prob = -1 * torch.FloatTensor(gradients)
-
-                grad_by_prob = -1 * torch.FloatTensor(gradients)
-                # if count % 1000 == 0:
-                #     print(grad_by_prob)
-
-                for outIdx, out in enumerate(output):
-                    out.backward(np.reshape(grad_by_prob[outIdx],(1,10)), retain_graph=True)
+                # Step 4: update parameters in neural networks
+                gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    for probIdx, (m,t,i,j) in enumerate(self.mvpp['nnProb'][ruleIdx]):
+                        self.nnGradients[m][t][i*self.k[model]+j] = - gradientsNN[ruleIdx][probIdx]
+                # backpropogate
+                for m in nnOutput:
+                    for t in nnOutput[model]:
+                        nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
                 for opt in self.optimizer:
                     self.optimizer[opt].step()
                     self.optimizer[opt].zero_grad()
-            print("{} is done!".format(epochIdx))    
+
+                # Step 5: update probabilities in normal prob. rules
+                pass
 
     def test_nn(self, nn, test_loader):
         
