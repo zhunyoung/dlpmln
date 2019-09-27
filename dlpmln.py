@@ -9,7 +9,7 @@ import numpy as np
 
 
 class DeepLPMLN(object):
-    def __init__(self, dprogram, functions,optimizer):
+    def __init__(self, dprogram, functions, optimizers):
 
         """
         @param dprogram: a string for a DeepLPMLN program
@@ -21,7 +21,7 @@ class DeepLPMLN(object):
         self.nnOutputs = {}
         self.nnGradients = {}
         self.functions = functions
-        self.optimizer = optimizer
+        self.optimizers = optimizers
         # self.mvpp is a dictionary consisting of 3 mappings: 
         # 1. 'program': a string denoting an MVPP program where the probabilistic rules generated from NN are followed by other rules;
         # 2. 'nnProb': a list of lists of tuples, each tuple is of the form (model, term, i, j)
@@ -61,7 +61,7 @@ class DeepLPMLN(object):
         if k == 1:
             for i in range(e):
                 rule = '@0.0 {}({}, {}, {}); @0.0 {}({}, {}, {}).'.format(pred, vin, i, domain[0], pred, vin, i, domain[1])
-                prob = [tuple((model, vin, i))]
+                prob = [tuple((model, vin, i, 0))]
                 mvppRules.append(rule)
                 self.mvpp['nnProb'].append(prob)
                 self.mvpp['nnPrRuleNum'] += 1
@@ -96,13 +96,14 @@ class DeepLPMLN(object):
         lines = [line.strip() for line in self.dprogram.split('\n') if line and not line.startswith('nn(')]
         return '\n'.join(mvppRules + lines)
         
-    def learn(self, dataList, obsList, epoch):
+    def infer(self, dataList, obsList, mvpp=None):
+        pass
 
+    def learn(self, dataList, obsList, epoch):
         """
-        @param dataList: a list of dictionaries, where each dictionary mapps terms to tensors/np-arrays
+        @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
         @param obsList: a list of strings, where each string is a set of constraints denoting an observation
         @param epoch: an integer denoting the number of epochs
-
         """
         assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
 
@@ -148,24 +149,23 @@ class DeepLPMLN(object):
                 for m in nnOutput:
                     for t in nnOutput[model]:
                         nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
-                for opt in self.optimizer:
-                    self.optimizer[opt].step()
-                    self.optimizer[opt].zero_grad()
+                for opt in self.optimizers:
+                    self.optimizers[opt].step()
+                    self.optimizers[opt].zero_grad()
 
                 # Step 5: update probabilities in normal prob. rules
                 pass
 
-    def test_nn(self, nn, test_loader):
-        
+    def testNN(self, nn, testLoader):
         """
         @nn is the name of the neural network to check the accuracy. 
-        @test_loader is the input and output pairs.
+        @testLoader is the input and output pairs.
         """
         self.functions[nn].eval()
         # test_loss = 0
         correct = 0
         with torch.no_grad():
-            for data, target in test_loader:
+            for data, target in testLoader:
                 # data, target = data.to(device), target.to(device)
                 output = self.functions[nn](data)
                 # test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
@@ -174,8 +174,65 @@ class DeepLPMLN(object):
                     correct += pred.eq(target.view_as(pred)).sum().item()
                 else: 
                     pass
-        print("Test Accuracy {:.0f}%".format(100. * correct / len(test_loader.dataset)) )
-        
+        print("Test Accuracy {:.0f}%".format(100. * correct / len(testLoader.dataset)) )
+    
+    def testConstraint(self, dataList, obsList, dprogramList):
+        """
+        @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
+        @param obsList: a list of strings, where each string is a set of constraints denoting an observation
+        @param dprogramList: a list of DeepLPMLN programs (each is a string)
+        """
+        assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
+
+        # we evaluate all nerual networks
+        for func in self.functions:
+            self.functions[func].eval()
+
+        # we test for each DeepLPMLN program
+        for programIdx, program in enumerate(dprogramList):
+            dmvpp = MVPP(program)
+            count = 0
+            for dataIdx, data in enumerate(dataList):
+                nnOutput = {}
+                # Step 1: get the output of each neural network and initialize the gradients
+                for model in self.nnOutputs:
+                    nnOutput[model] = {}
+                    for vin in self.nnOutputs[model]:
+                        nnOutput[model][vin] = self.functions[model](data[model][vin])
+                        self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
+                        # initialize the gradients for each output
+                        self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
+                # print(self.nnOutputs)
+                # print(self.nnGradients)
+
+                # print(self.mvpp['nnProb'])
+                # Step 2: replace the parameters in the MVPP program with nn outputs
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+
+                # Step 3: compute the gradients
+                dmvpp.normalize_probs()
+                gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
+
+                # Step 4: update parameters in neural networks
+                gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    for probIdx, (m,t,i,j) in enumerate(self.mvpp['nnProb'][ruleIdx]):
+                        self.nnGradients[m][t][i*self.k[model]+j] = - gradientsNN[ruleIdx][probIdx]
+                # backpropogate
+                for m in nnOutput:
+                    for t in nnOutput[model]:
+                        nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
+                for opt in self.optimizers:
+                    self.optimizers[opt].step()
+                    self.optimizers[opt].zero_grad()
+
+                # Step 5: update probabilities in normal prob. rules
+                pass
+
+            print('The accuracy for the {}th program is {}'.format(programIdx+1, float(count)/len(dataList)))
+
+
     def dataloader_error_checker(self, pred2data, preds):
         # we check for each experiment
         for pred,arity in preds:
