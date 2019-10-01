@@ -44,7 +44,7 @@ dataList = []
 # obstxt = ""
 obsList = []
 for dataIdx, data in enumerate(train_loader):
-	dataList.append({"m":{"i1":data[0][0].view(1, 1, 28, 28), "i2":data[0][1].view(1, 1, 28, 28)}})
+	dataList.append({{"i1":data[0][0].view(1, 1, 28, 28), "i2":data[0][1].view(1, 1, 28, 28)})
 	obsList.append(":- not addition(i1, i2, {}).".format( data[1][0]+data[1][1]))
 # 	obstxt += "addition(i1, i2, {}).\n#evidence\n".format( data[1][0]+data[1][1])
 	
