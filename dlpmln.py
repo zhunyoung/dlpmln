@@ -25,8 +25,9 @@ class DeepLPMLN(object):
         # self.mvpp is a dictionary consisting of 3 mappings: 
         # 1. 'program': a string denoting an MVPP program where the probabilistic rules generated from NN are followed by other rules;
         # 2. 'nnProb': a list of lists of tuples, each tuple is of the form (model, term, i, j)
-        # 3. 'nnPrRuleNum': an integer denoting the number of probabilistic rules generated from NN
-        self.mvpp = {'nnProb': [], 'nnPrRuleNum': 0, 'program': ''}
+        # 3. 'atom': a list of list of atoms, where each list of atoms is corresponding to a prob. rule
+        # 4. 'nnPrRuleNum': an integer denoting the number of probabilistic rules generated from NN
+        self.mvpp = {'nnProb': [], 'atom': [], 'nnPrRuleNum': 0, 'program': ''}
         self.mvpp['program'] = self.parse()
 
     def nnAtom2MVPPrules(self, nnAtom):
@@ -62,19 +63,25 @@ class DeepLPMLN(object):
             for i in range(e):
                 rule = '@0.0 {}({}, {}, {}); @0.0 {}({}, {}, {}).'.format(pred, vin, i, domain[0], pred, vin, i, domain[1])
                 prob = [tuple((model, vin, i, 0))]
+                atoms = ['{}({}, {}, {})'.format(pred, vin, i, domain[0]), '{}({}, {}, {})'.format(pred, vin, i, domain[1])]
                 mvppRules.append(rule)
                 self.mvpp['nnProb'].append(prob)
+                self.mvpp['atom'].append(atoms)
                 self.mvpp['nnPrRuleNum'] += 1
 
         elif k > 2:
             for i in range(e):
                 rule = ''
                 prob = []
+                atoms = []
                 for j in range(k):
+                    atom = '{}({}, {}, {})'.format(pred, vin, i, domain[j])
                     rule += '@0.0 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
                     prob.append(tuple((model, vin, i, j)))
+                    atoms.append(atom)
                 mvppRules.append(rule[:-2]+'.')
                 self.mvpp['nnProb'].append(prob)
+                self.mvpp['atom'].append(atoms)
                 self.mvpp['nnPrRuleNum'] += 1
         else:
             print('Error: the number of element in the domain %s is less than 2' % domain)
@@ -124,7 +131,7 @@ class DeepLPMLN(object):
                 for model in self.nnOutputs:
                     nnOutput[model] = {}
                     for vin in self.nnOutputs[model]:
-                        nnOutput[model][vin] = self.functions[model](data[model][vin])
+                        nnOutput[model][vin] = self.functions[model](data[vin])
                         self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
                         # initialize the gradients for each output
                         self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
@@ -176,11 +183,11 @@ class DeepLPMLN(object):
                     pass
         print("Test Accuracy {:.0f}%".format(100. * correct / len(testLoader.dataset)) )
     
-    def testConstraint(self, dataList, obsList, dprogramList):
+    def testConstraint(self, dataList, obsList, mvppList):
         """
         @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
         @param obsList: a list of strings, where each string is a set of constraints denoting an observation
-        @param dprogramList: a list of DeepLPMLN programs (each is a string)
+        @param mvppList: a list of MVPP programs (each is a string)
         """
         assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
 
@@ -189,46 +196,32 @@ class DeepLPMLN(object):
             self.functions[func].eval()
 
         # we test for each DeepLPMLN program
-        for programIdx, program in enumerate(dprogramList):
-            dmvpp = MVPP(program)
+        for programIdx, program in enumerate(mvppList):
+            mvpp = MVPP(program)
             count = 0
             for dataIdx, data in enumerate(dataList):
                 nnOutput = {}
-                # Step 1: get the output of each neural network and initialize the gradients
+                # Step 1: get the output of each neural network
                 for model in self.nnOutputs:
                     nnOutput[model] = {}
                     for vin in self.nnOutputs[model]:
-                        nnOutput[model][vin] = self.functions[model](data[model][vin])
+                        nnOutput[model][vin] = self.functions[model](data[vin])
                         self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
-                        # initialize the gradients for each output
-                        self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
-                # print(self.nnOutputs)
-                # print(self.nnGradients)
+                print(self.nnOutputs)
 
-                # print(self.mvpp['nnProb'])
-                # Step 2: replace the parameters in the MVPP program with nn outputs
+                # Step 2: turn the NN outputs into a set of ASP facts
+                aspFacts = ''
                 for ruleIdx in range(self.mvpp['nnPrRuleNum']):
-                    dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+                    tmp = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+                    atomIdx = tmp.index(max(tmp))
+                    aspFacts += self.mvpp['atom'][ruleIdx][atomIdx] + '.\n'
+                print(aspFacts)
+                sys.exit()
 
-                # Step 3: compute the gradients
-                dmvpp.normalize_probs()
-                gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
-
-                # Step 4: update parameters in neural networks
-                gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
-                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
-                    for probIdx, (m,t,i,j) in enumerate(self.mvpp['nnProb'][ruleIdx]):
-                        self.nnGradients[m][t][i*self.k[model]+j] = - gradientsNN[ruleIdx][probIdx]
-                # backpropogate
-                for m in nnOutput:
-                    for t in nnOutput[model]:
-                        nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
-                for opt in self.optimizers:
-                    self.optimizers[opt].step()
-                    self.optimizers[opt].zero_grad()
-
-                # Step 5: update probabilities in normal prob. rules
-                pass
+                # Step 3: check if the mvpp program is satisfiable with the facts generated from NN outputs
+                mvpp.pi_prime += aspFacts
+                if mvpp.find_one_SM_under_obs(obs=obsList[dataIdx]):
+                    count += 1
 
             print('The accuracy for the {}th program is {}'.format(programIdx+1, float(count)/len(dataList)))
 
