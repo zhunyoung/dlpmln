@@ -41,7 +41,7 @@ class DeepLPMLN(object):
         regex = '^nn\((.+\)),(.+),(\(.+\))[)]$'
         out = re.search(regex, nnAtom)
         model, vin = out.group(1).split('(')
-        vin, e = vin.replace(')','').split(',')
+        vin, e = vin.replace(')','').rsplit(',', 1)
         e = int(e)
         pred = out.group(2)
         domain = out.group(3).replace('(', '').replace(')','').split(',')
@@ -133,7 +133,7 @@ class DeepLPMLN(object):
         return dmvpp.find_all_opt_SM_under_obs(obs=obs)
 
 
-    def learn(self, dataList, obsList, epoch,opt=False):
+    def learn(self, dataList, obsList, epoch):
         """
         @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
         @param obsList: a list of strings, where each string is a set of constraints denoting an observation
@@ -168,16 +168,11 @@ class DeepLPMLN(object):
                 # print(self.mvpp['nnProb'])
                 # Step 2: replace the parameters in the MVPP program with nn outputs
                 for ruleIdx in range(self.mvpp['nnPrRuleNum']):
-                    for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]:
-                        if self.k[m] > 2:
-                            dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j]]
-                        else:
-                             dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j], 1-self.nnOutputs[m][t][i*self.k[model]+j]]
+                    dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
 
                 # Step 3: compute the gradients
                 dmvpp.normalize_probs()
-                gradients = dmvpp.gradients_one_obs(obsList[dataIdx], opt)
-
+                gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
 
                 # Step 4: update parameters in neural networks
                 gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
@@ -185,8 +180,6 @@ class DeepLPMLN(object):
                     for probIdx, (m,t,i,j) in enumerate(self.mvpp['nnProb'][ruleIdx]):
                         self.nnGradients[m][t][i*self.k[model]+j] = - gradientsNN[ruleIdx][probIdx]
                 # backpropogate
-                print(nnOutput)
-                sys.exit()
                 for m in nnOutput:
                     for t in nnOutput[model]:
                         nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
