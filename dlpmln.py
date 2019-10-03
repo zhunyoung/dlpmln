@@ -103,8 +103,35 @@ class DeepLPMLN(object):
         lines = [line.strip() for line in self.dprogram.split('\n') if line and not line.startswith('nn(')]
         return '\n'.join(mvppRules + lines)
         
-    def infer(self, dataList, obsList, mvpp=None):
-        pass
+    def infer(self, dataDic, obs, mvpp=''):
+        """
+        @param dataDic: a dictionary that maps terms to tensors/np-arrays
+        @param obs: a list of strings, where each string is a set of constraints denoting an observation
+        @param mvpp: an MVPP program used in inference
+        """
+
+        # Step 1: get the output of each neural network
+        for model in self.nnOutputs:
+            for vin in self.nnOutputs[model]:
+                self.nnOutputs[model][vin] = self.functions[model](dataDic[vin]).view(-1).tolist()
+        print(self.nnOutputs)
+
+        # Step 2: turn the NN outputs into a set of MVPP probabilistic rules
+        mvppRules = ''
+        for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+            probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+            if len(probs) == 1:
+                mvppRules += '@{} {}; @{} {}.\n'.format(probs[0], self.mvpp['atom'][ruleIdx][0], 1 - probs[0], self.mvpp['atom'][ruleIdx][1])
+            else:
+                tmp = ''
+                for atomIdx, prob in enumerate(probs):
+                    tmp += '@{} {}; '.format(prob, self.mvpp['atom'][ruleIdx][atomIdx])
+                mvppRules += tmp[:-2] + '.\n'
+
+        # Step 3: find an optimal SM under obs
+        dmvpp = MVPP(mvppRules + mvpp)
+        return dmvpp.find_all_opt_SM_under_obs(obs=obs)
+
 
     def learn(self, dataList, obsList, epoch,opt=False):
         """
@@ -214,16 +241,18 @@ class DeepLPMLN(object):
                     for vin in self.nnOutputs[model]:
                         nnOutput[model][vin] = self.functions[model](data[vin])
                         self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
-                print(self.nnOutputs)
+                # print(self.nnOutputs)
 
                 # Step 2: turn the NN outputs into a set of ASP facts
                 aspFacts = ''
                 for ruleIdx in range(self.mvpp['nnPrRuleNum']):
-                    tmp = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
-                    atomIdx = tmp.index(max(tmp))
+                    probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+                    if len(probs) == 1:
+                        atomIdx = int(probs[0] > 0.5)
+                    else:
+                        atomIdx = probs.index(max(probs))
                     aspFacts += self.mvpp['atom'][ruleIdx][atomIdx] + '.\n'
-                print(aspFacts)
-                sys.exit()
+                # print(aspFacts)
 
                 # Step 3: check if the mvpp program is satisfiable with the facts generated from NN outputs
                 mvpp.pi_prime += aspFacts

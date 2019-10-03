@@ -2,6 +2,8 @@ import os.path
 import re
 import numpy as np
 import clingo
+import math
+import itertools
 import time
 import sys
 
@@ -294,12 +296,21 @@ class MVPP(object):
             for modelIdx, model in enumerate(models):
                 # if I satisfies cEqualsVi
                 if cEqualsVi in model:
-                    numerator += probs[modelIdx] / self.parameters[ruleIdx][i]
+                    if self.parameters[ruleIdx][i] != 0:
+                        numerator += probs[modelIdx] / self.parameters[ruleIdx][i]
+                    else:
+                        numerator += probs[modelIdx] / (self.parameters[ruleIdx][i] + self.eps)
+
+
                 # if I does not satisfy cEqualsVi
                 else:
                     for atomIdx, atom in enumerate(self.pc[ruleIdx]):
                         if atom in model:
-                            numerator -= probs[modelIdx] / self.parameters[ruleIdx][atomIdx]
+                            if self.parameters[ruleIdx][atomIdx]!=0:
+                                numerator -= probs[modelIdx] / self.parameters[ruleIdx][atomIdx]
+                            else:
+                                numerator -= probs[modelIdx] / (self.parameters[ruleIdx][atomIdx]+self.eps)
+
             gradients.append(numerator / denominator)
         # print(gradients)
         return np.array(gradients)
