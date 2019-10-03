@@ -2,6 +2,8 @@ import os.path
 import re
 import numpy as np
 import clingo
+import math
+import itertools
 import time
 import sys
 
@@ -182,6 +184,40 @@ class MVPP(object):
         # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
         return models
 
+    # there might be some duplications in SMs when optimization option is used
+    # and the duplications are removed by this method
+    def remove_duplicate_SM(self, models):
+        models.sort()
+        return list(models for models,_ in itertools.groupby(models))
+
+    # we assume obs is a string containing a valid Clingo program, 
+    # and each obs is written in constraint form
+    def find_all_opt_SM_under_obs(self, obs):
+        program = self.pi_prime + obs + '\n'
+        # for each probabilistic rule with n atoms, add n weak constraints
+        for ruleIdx, atoms in enumerate(self.pc):
+            for atomIdx, atom in enumerate(atoms):
+                if self.parameters[ruleIdx][atomIdx] < 0.00674:
+                    penalty = -1000 * -5
+                else:
+                    penalty = int(-1000 * math.log(self.parameters[ruleIdx][atomIdx]))
+                program += ':~ {}. [{}, {}, {}]\n'.format(atom, penalty, ruleIdx, atomIdx)
+
+        print("program:\n{}\n".format(program))
+        clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
+        models = []
+        # print("\nPi': \n{}".format(program))
+        clingo_control.add("base", [], program)
+        # print("point 3")
+        clingo_control.ground([("base", [])])
+        # print("point 4")
+        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)) if model.optimality_proven else None)
+        # print("point 5")
+        models = [[str(atom) for atom in model] for model in models]
+        # print("point 6")
+        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
+        return self.remove_duplicate_SM(models)
+
     # compute P(O)
     def inference_obs_exact(self, obs):
         prob = 0
@@ -259,12 +295,21 @@ class MVPP(object):
             for modelIdx, model in enumerate(models):
                 # if I satisfies cEqualsVi
                 if cEqualsVi in model:
-                    numerator += probs[modelIdx] / self.parameters[ruleIdx][i]
+                    if self.parameters[ruleIdx][i] != 0:
+                        numerator += probs[modelIdx] / self.parameters[ruleIdx][i]
+                    else:
+                        numerator += probs[modelIdx] / (self.parameters[ruleIdx][i] + self.eps)
+
+
                 # if I does not satisfy cEqualsVi
                 else:
                     for atomIdx, atom in enumerate(self.pc[ruleIdx]):
                         if atom in model:
-                            numerator -= probs[modelIdx] / self.parameters[ruleIdx][atomIdx]
+                            if self.parameters[ruleIdx][atomIdx]!=0:
+                                numerator -= probs[modelIdx] / self.parameters[ruleIdx][atomIdx]
+                            else:
+                                numerator -= probs[modelIdx] / (self.parameters[ruleIdx][atomIdx]+self.eps)
+
             gradients.append(numerator / denominator)
         # print(gradients)
         return np.array(gradients)
