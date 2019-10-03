@@ -85,6 +85,7 @@ class MVPP(object):
         return pc, parameters, learnable, asp, pi_prime, remain_probs
 
     def normalize_probs(self):
+        
         for ruleIdx, list_of_bools in enumerate(self.learnable):
             summation = 0
             # 1st, we turn each probability into [0+eps,1-eps]
@@ -181,6 +182,40 @@ class MVPP(object):
         # print("point 6")
         # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
         return models
+
+    # there might be some duplications in SMs when optimization option is used
+    # and the duplications are removed by this method
+    def remove_duplicate_SM(self, models):
+        models.sort()
+        return list(models for models,_ in itertools.groupby(models))
+
+    # we assume obs is a string containing a valid Clingo program, 
+    # and each obs is written in constraint form
+    def find_all_opt_SM_under_obs(self, obs):
+        program = self.pi_prime + obs + '\n'
+        # for each probabilistic rule with n atoms, add n weak constraints
+        for ruleIdx, atoms in enumerate(self.pc):
+            for atomIdx, atom in enumerate(atoms):
+                if self.parameters[ruleIdx][atomIdx] < 0.00674:
+                    penalty = -1000 * -5
+                else:
+                    penalty = int(-1000 * math.log(self.parameters[ruleIdx][atomIdx]))
+                program += ':~ {}. [{}, {}, {}]\n'.format(atom, penalty, ruleIdx, atomIdx)
+
+        print("program:\n{}\n".format(program))
+        clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
+        models = []
+        # print("\nPi': \n{}".format(program))
+        clingo_control.add("base", [], program)
+        # print("point 3")
+        clingo_control.ground([("base", [])])
+        # print("point 4")
+        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)) if model.optimality_proven else None)
+        # print("point 5")
+        models = [[str(atom) for atom in model] for model in models]
+        # print("point 6")
+        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
+        return self.remove_duplicate_SM(models)
 
     # compute P(O)
     def inference_obs_exact(self, obs):
@@ -284,8 +319,16 @@ class MVPP(object):
 
     # gradients are stored in numpy array instead of list
     # obs is a string
-    def gradients_one_obs(self, obs):
-        models = self.find_k_SM_under_obs(obs, k=0)
+    def gradients_one_obs(self, obs, opt=False):
+        models = []
+        if opt == False:
+            models = self.find_k_SM_under_obs(obs, k=0)
+        else:
+            models = self.find_all_opt_SM_under_obs(obs)
+        if len(models) == 0:
+            print(self.pi_prime)
+            print(obs)
+            sys.exit()
         return self.mvppLearn(models)
 
     # gradients are stored in numpy array instead of list
