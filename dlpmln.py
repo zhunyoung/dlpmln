@@ -1,623 +1,406 @@
-import os.path
 import re
-import numpy as np
-import clingo
-import math
-import itertools
-import time
 import sys
+from klpmln import MVPP
+import clingo
+import sys
+import torch
+import numpy as np
 
-class MVPP(object):
-    def __init__(self, program, k=1, eps=0.000001):
-        self.k = k
-        self.eps = eps
 
-        # each element in self.pc is a list of atoms (one list for one prob choice rule)
-        self.pc = []
-        # each element in self.parameters is a list of probabilities
-        self.parameters = []
-        # each element in self.learnable is a list of Boolean values
-        self.learnable = []
-        # self.asp is the ASP part of the LPMLN program
-        self.asp = ""
-        # self.pi_prime is the ASP program \Pi' defined for the semantics
-        self.pi_prime = ""
-        # self.remain_probs is a list of probs, each denotes a remaining prob given those non-learnable probs
-        self.remain_probs = []
 
-        self.pc, self.parameters, self.learnable, self.asp, self.pi_prime, self.remain_probs = self.parse(program)
-        self.normalize_probs()
+class DeepLPMLN(object):
+    def __init__(self, dprogram, functions, optimizers):
 
-    def parse(self, program):
-        pc = []
-        parameters = []
-        learnable = []
-        asp = ""
-        pi_prime = ""
-        remain_probs = []
+        """
+        @param dprogram: a string for a DeepLPMLN program
+        @param functions: a list of neural networks
+        """
+        self.dprogram = dprogram
+        self.k = {} # k would be 1 or N (>=3); note that k=2 in theorey is implemented as k=1
+        self.e = {}
+        self.nnOutputs = {}
+        self.nnGradients = {}
+        self.functions = functions
+        self.optimizers = optimizers
+        # self.mvpp is a dictionary consisting of 3 mappings: 
+        # 1. 'program': a string denoting an MVPP program where the probabilistic rules generated from NN are followed by other rules;
+        # 2. 'nnProb': a list of lists of tuples, each tuple is of the form (model, term, i, j)
+        # 3. 'atom': a list of list of atoms, where each list of atoms is corresponding to a prob. rule
+        # 4. 'nnPrRuleNum': an integer denoting the number of probabilistic rules generated from NN
+        self.mvpp = {'nnProb': [], 'atom': [], 'nnPrRuleNum': 0, 'program': ''}
+        self.mvpp['program'] = self.parse()
 
-        lines = []
-        # if program is a file
-        if os.path.isfile(program):
-            with open(program, 'r') as program:
-                lines = program.readlines()
-                # print("lines1: {}".format(lines))
-        # if program is a string containing all rules of an LPMLN program
-        elif type(program) is str and program.strip().endswith("."):
-            lines = program.split('\n')
-            # print("lines2: {}".format(lines))
+    def nnAtom2MVPPrules(self, nnAtom):
+        """
+        @param nnAtom: a string of a neural atom
+        @param countIdx: a Boolean value denoting whether we count the index for the value of m(vin, i)[j]
+        """
+        mvppRules = []
+
+        # STEP 1: obtain all information
+        regex = '^nn\((.+\)),(.+),(\(.+\))[)]$'
+        out = re.search(regex, nnAtom)
+        model, vin = out.group(1).split('(')
+        vin, e = vin.replace(')','').split(',')
+        e = int(e)
+        pred = out.group(2)
+        domain = out.group(3).replace('(', '').replace(')','').split(',')
+        k = len(domain)
+        if k == 2:
+            k = 1
+        self.k[model] = k
+        self.e[model] = e
+        if model not in self.nnOutputs:
+            self.nnOutputs[model] = {}
+            self.nnGradients[model] = {}
+        if vin not in self.nnOutputs[model]:
+            self.nnOutputs[model][vin] = None
+            self.nnGradients[model][vin] = None
+
+        # STEP 2: generate MVPP rules
+        # we have different translations when k = 2 or when k > 2
+        if k == 1:
+            for i in range(e):
+                rule = '@0.0 {}({}, {}, {}); @0.0 {}({}, {}, {}).'.format(pred, vin, i, domain[0], pred, vin, i, domain[1])
+                prob = [tuple((model, vin, i, 0))]
+                atoms = ['{}({}, {}, {})'.format(pred, vin, i, domain[0]), '{}({}, {}, {})'.format(pred, vin, i, domain[1])]
+                mvppRules.append(rule)
+                self.mvpp['nnProb'].append(prob)
+                self.mvpp['atom'].append(atoms)
+                self.mvpp['nnPrRuleNum'] += 1
+
+        elif k > 2:
+            for i in range(e):
+                rule = ''
+                prob = []
+                atoms = []
+                for j in range(k):
+                    atom = '{}({}, {}, {})'.format(pred, vin, i, domain[j])
+                    rule += '@0.0 {}({}, {}, {}); '.format(pred, vin, i, domain[j])
+                    prob.append(tuple((model, vin, i, j)))
+                    atoms.append(atom)
+                mvppRules.append(rule[:-2]+'.')
+                self.mvpp['nnProb'].append(prob)
+                self.mvpp['atom'].append(atoms)
+                self.mvpp['nnPrRuleNum'] += 1
         else:
-            print("Error! The MVPP program is not valid.")
-            sys.exit()
+            print('Error: the number of element in the domain %s is less than 2' % domain)
+        return mvppRules
 
-        for line in lines:
-            if re.match(r".*[0-1]\.?[0-9]*\s.*;.*", line):
-                list_of_atoms = []
-                list_of_probs = []
-                list_of_bools = []
-                choices = line.strip()[:-1].split(";")
-                for choice in choices:
-                    # print(choice)
-                    prob, atom = choice.strip().split(" ", maxsplit=1)
-                    # Note that we remove all spaces in atom since clingo output does not contain space in atom
-                    list_of_atoms.append(atom.replace(" ", ""))
-                    if prob.startswith("@"):
-                        list_of_probs.append(float(prob[1:]))
-                        list_of_bools.append(True)
-                    else:
-                        list_of_probs.append(float(prob))
-                        list_of_bools.append(False)
-                pc.append(list_of_atoms)
-                parameters.append(list_of_probs)
-                learnable.append(list_of_bools)
-                pi_prime += "1{"+"; ".join(list_of_atoms)+"}1.\n"
+
+    def parse(self):
+        # 1. Generate grounded nn atoms
+        clingo_control = clingo.Control(["--warn=none"])
+        # remove weak constraints
+        program = re.sub(r'\n:~ .+\.[ \t]*\[.+\]', '\n', self.dprogram)
+        clingo_control.add("base", [], program.replace('[', '(').replace(']', ')'))
+        clingo_control.ground([("base", [])])
+        symbols = [atom.symbol for atom in clingo_control.symbolic_atoms]
+        mvppRules = [self.nnAtom2MVPPrules(str(atom)) for atom in symbols if atom.name == 'nn']
+        mvppRules = [rule for rules in mvppRules for rule in rules]
+
+        # 2. Combine neural rules with the other rules
+        lines = [line.strip() for line in self.dprogram.split('\n') if line and not line.startswith('nn(')]
+        return '\n'.join(mvppRules + lines)
+        
+    def infer(self, dataDic, obs, mvpp=''):
+        """
+        @param dataDic: a dictionary that maps terms to tensors/np-arrays
+        @param obs: a list of strings, where each string is a set of constraints denoting an observation
+        @param mvpp: an MVPP program used in inference
+        """
+
+        # Step 1: get the output of each neural network
+        for model in self.nnOutputs:
+            for vin in self.nnOutputs[model]:
+                self.nnOutputs[model][vin] = self.functions[model](dataDic[vin]).view(-1).tolist()
+        print(self.nnOutputs)
+
+        # Step 2: turn the NN outputs into a set of MVPP probabilistic rules
+        mvppRules = ''
+        for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+            probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+            if len(probs) == 1:
+                mvppRules += '@{} {}; @{} {}.\n'.format(probs[0], self.mvpp['atom'][ruleIdx][0], 1 - probs[0], self.mvpp['atom'][ruleIdx][1])
             else:
-                asp += (line.strip()+"\n")
+                tmp = ''
+                for atomIdx, prob in enumerate(probs):
+                    tmp += '@{} {}; '.format(prob, self.mvpp['atom'][ruleIdx][atomIdx])
+                mvppRules += tmp[:-2] + '.\n'
 
-        pi_prime += asp
+        # Step 3: find an optimal SM under obs
+        dmvpp = MVPP(mvppRules + mvpp)
+        return dmvpp.find_all_opt_SM_under_obs(obs=obs)
 
-        for ruleIdx, list_of_bools in enumerate(learnable):
-            remain_prob = 1
-            for atomIdx, b in enumerate(list_of_bools):
-                if b == False:
-                    remain_prob -= parameters[ruleIdx][atomIdx]
-            remain_probs.append(remain_prob)
 
-        # parameters = np.array([np.array(l) for l in parameters])
-        return pc, parameters, learnable, asp, pi_prime, remain_probs
+    def learn(self, dataList, obsList, epoch):
+        """
+        @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
+        @param obsList: a list of strings, where each string is a set of constraints denoting an observation
+        @param epoch: an integer denoting the number of epochs
+        """
+        assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
 
-    def normalize_probs(self):
-        for ruleIdx, list_of_bools in enumerate(self.learnable):
-            summation = 0
-            # 1st, we turn each probability into [0+eps,1-eps]
-            for atomIdx, b in enumerate(list_of_bools):
-                if b == True:
-                    if self.parameters[ruleIdx][atomIdx] >=1 :
-                        self.parameters[ruleIdx][atomIdx] = 1- self.eps
-                    elif self.parameters[ruleIdx][atomIdx] <=0:
-                        self.parameters[ruleIdx][atomIdx] = self.eps
+        # get the mvpp program by self.mvpp, so far self.mvpp is a string
+        dmvpp = MVPP(self.mvpp['program'])
 
-            # 2nd, we normalize the probabilities
-            for atomIdx, b in enumerate(list_of_bools):
-                if b == True:
-                    summation += self.parameters[ruleIdx][atomIdx]
-            for atomIdx, b in enumerate(list_of_bools):
-                if b == True:
-                    self.parameters[ruleIdx][atomIdx] = self.parameters[ruleIdx][atomIdx] / summation * self.remain_probs[ruleIdx]
+        # we train all nerual networks
+        for func in self.functions:
+            self.functions[func].train()
 
+        # we train for epoch times of epochs
+        for epochIdx in range(epoch):
+            print('Training for epoch %d ...' % (epochIdx + 1))
+            # for each training instance in the training data
+            for dataIdx, data in enumerate(dataList):
+                nnOutput = {}
+                # Step 1: get the output of each neural network and initialize the gradients
+                for model in self.nnOutputs:
+                    nnOutput[model] = {}
+                    for vin in self.nnOutputs[model]:
+                        nnOutput[model][vin] = self.functions[model](data[vin])
+                        self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
+                        # initialize the gradients for each output
+                        self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
+                # print(self.nnOutputs)
+                # print(self.nnGradients)
+
+                # print(self.mvpp['nnProb'])
+                # Step 2: replace the parameters in the MVPP program with nn outputs
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+
+                # Step 3: compute the gradients
+                dmvpp.normalize_probs()
+                gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
+
+                # Step 4: update parameters in neural networks
+                gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    for probIdx, (m,t,i,j) in enumerate(self.mvpp['nnProb'][ruleIdx]):
+                        self.nnGradients[m][t][i*self.k[model]+j] = - gradientsNN[ruleIdx][probIdx]
+                # backpropogate
+                for m in nnOutput:
+                    for t in nnOutput[model]:
+                        nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
+                for opt in self.optimizers:
+                    self.optimizers[opt].step()
+                    self.optimizers[opt].zero_grad()
+
+                # Step 5: update probabilities in normal prob. rules
+                pass
+
+    def testNN(self, nn, testLoader):
+        """
+        @nn is the name of the neural network to check the accuracy. 
+        @testLoader is the input and output pairs.
+        """
+        self.functions[nn].eval()
+        # test_loss = 0
+        correct = 0
+        with torch.no_grad():
+            for data, target in testLoader:
+                # data, target = data.to(device), target.to(device)
+                output = self.functions[nn](data)
+                # test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
+                if self.k[nn] >2 :
+                    pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
+                    correct += pred.eq(target.view_as(pred)).sum().item()
+                else: 
+                    pass
+        print("Test Accuracy {:.0f}%".format(100. * correct / len(testLoader.dataset)) )
+    
+    def testConstraint(self, dataList, obsList, mvppList):
+        """
+        @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
+        @param obsList: a list of strings, where each string is a set of constraints denoting an observation
+        @param mvppList: a list of MVPP programs (each is a string)
+        """
+        assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
+
+        # we evaluate all nerual networks
+        for func in self.functions:
+            self.functions[func].eval()
+
+        # we test for each DeepLPMLN program
+        for programIdx, program in enumerate(mvppList):
+            mvpp = MVPP(program)
+            count = 0
+            for dataIdx, data in enumerate(dataList):
+                nnOutput = {}
+                # Step 1: get the output of each neural network
+                for model in self.nnOutputs:
+                    nnOutput[model] = {}
+                    for vin in self.nnOutputs[model]:
+                        nnOutput[model][vin] = self.functions[model](data[vin])
+                        self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
+                # print(self.nnOutputs)
+
+                # Step 2: turn the NN outputs into a set of ASP facts
+                aspFacts = ''
+                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+                    if len(probs) == 1:
+                        atomIdx = int(probs[0] > 0.5)
+                    else:
+                        atomIdx = probs.index(max(probs))
+                    aspFacts += self.mvpp['atom'][ruleIdx][atomIdx] + '.\n'
+                # print(aspFacts)
+
+                # Step 3: check if the mvpp program is satisfiable with the facts generated from NN outputs
+                mvpp.pi_prime += aspFacts
+                if mvpp.find_one_SM_under_obs(obs=obsList[dataIdx]):
+                    count += 1
+
+            print('The accuracy for the {}th program is {}'.format(programIdx+1, float(count)/len(dataList)))
+
+
+    def dataloader_error_checker(self, pred2data, preds):
+        # we check for each experiment
+        for pred,arity in preds:
+            if pred not in pred2data:
+                print("Error: the data for predicate '{}'' cannot be found in Dataloader!".format(pred))
+                return False
+            else:
+                # the arity of pred may be more than 1, thus each data is in the form of a list, whose arity is the same as the arity of pred
+                for data_list in pred2data[pred]:
+                    if len(data_list) != arity:
+                        print("Error: the arity of predicate '{}' is {} but it does not match with data:\n{}".format(pred, arity, data_list))
+                        return False
         return True
 
-    def prob_of_interpretation(self, I):
-        prob = 1.0
-        # I must be a list of atoms, where each atom is a string
-        while not isinstance(I[0], str):
-            I = I[0]
-        # print("I is {}".format(I))
-        # print(self.pc)
-        for ruleIdx,list_of_atoms in enumerate(self.pc):
-            for atomIdx, atom in enumerate(list_of_atoms):
-                if atom in I:
-                    prob = prob * self.parameters[ruleIdx][atomIdx]
-                    # print(prob)
-        # sys.exit()
-        return prob
+    def run(self, program, dataloader, mode):
+        import lpmln_parser
+        import clingo
+        import subprocess
+        import math
 
-    # we assume obs is a string containing a valid Clingo program, 
-    # and each obs is written in constraint form
-    def find_one_SM_under_obs(self, obs):
-        program = self.pi_prime + obs
-        # print("program:\n{}\n".format(program))
-        clingo_control = clingo.Control(["--warn=none"])
-        models = []
-        # print("\nPi': \n{}".format(program))
-        clingo_control.add("base", [], program)
-        # print("point 3")
-        clingo_control.ground([("base", [])])
-        # print("point 4")
-        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)))
-        # print("point 5")
-        models = [[str(atom) for atom in model] for model in models]
-        # print("point 6")
-        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
-        return models
+        # 1. Find img (with 1 input) in program
+        lpmln, program_wo_input_rules, preds  = self.parse_dlpmln(program)
+        # print("preds: {}".format(preds))
 
-    # we assume obs is a string containing a valid Clingo program, 
-    # and each obs is written in constraint form
-    def find_all_SM_under_obs(self, obs):
-        program = self.pi_prime + obs
-        # print("program:\n{}\n".format(program))
-        clingo_control = clingo.Control(["0", "--warn=none"])
-        models = []
-        # print("\nPi': \n{}".format(program))
-        try:
-            clingo_control.add("base", [], program)
-        except:
-            print("\nPi': \n{}".format(program))
-        # print("point 3")
-        clingo_control.ground([("base", [])])
-        # print("point 4")
-        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)))
-        # print("point 5")
-        models = [[str(atom) for atom in model] for model in models]
-        # print("point 6")
-        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
-        return models
+        # 2. Call dataloader, each element in dataloader is a mapping from predicate name to data
+        # We invoke one LPMLN inference for each element in dataloader
+        for batch_i, pred2data in enumerate(dataloader):
+            new_lpmln = lpmln
+            print("Experiment {}:".format(batch_i))
+            if not self.dataloader_error_checker(pred2data, preds):
+                continue
 
-    # k = 0 means to find all stable models
-    def find_k_SM_under_obs(self, obs, k=3):
-        program = self.pi_prime + obs
-        # print("program:\n{}\n".format(program))
-        clingo_control = clingo.Control(["--warn=none", str(int(k))])
-        models = []
-        # print("\nPi': \n{}".format(program))
-        try:
-            clingo_control.add("base", [], program)
-        except:
-            print("\nPi': \n{}".format(program))
-        # print("point 3")
-        clingo_control.ground([("base", [])])
-        # print("point 4")
-        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)))
-        # print("point 5")
-        models = [[str(atom) for atom in model] for model in models]
-        # print("point 6")
-        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
-        return models
+            # for each experiment, we need a new mapping from constant to data
+            constant2data = {}
+            inputRules = []
+            for pred,arity in preds:
+                for inputIdx, data_list in enumerate(pred2data[pred]):
+                    constants = ""
+                    for dataIdx, data in enumerate(data_list):
+                        # constantName = pred_inputIdx_dataIdx
+                        constantName = "{}_{}_{}".format(pred, inputIdx, dataIdx)
+                        constant2data[constantName] = data
+                        constants += ", {}".format(constantName)
+                    inputRules.append("{}({}).\n".format(pred, constants[2:]))
 
-    # there might be some duplications in SMs when optimization option is used
-    # and the duplications are removed by this method
-    def remove_duplicate_SM(self, models):
-        models.sort()
-        return list(models for models,_ in itertools.groupby(models))
+            # 3. We ground the deepLPMLN program and obtain all nn(*) atoms
+            # we construct the lpmln program with the evidences for the input data
+            for rule in inputRules:
+                program_wo_input_rules += rule
+            # we use lpmln2asp to turn lpmln to asp, and then use gringo to ground it
+            lpmlnParser = lpmln_parser.lpmln_parser()
+            # print(lpmln_parser.lpmln_to_asp_parser(lpmln))
 
-    # we assume obs is a string containing a valid Clingo program, 
-    # and each obs is written in constraint form
-    def find_all_opt_SM_under_obs(self, obs):
-        program = self.pi_prime + obs + '\n'
-        # for each probabilistic rule with n atoms, add n weak constraints
-        for ruleIdx, atoms in enumerate(self.pc):
-            for atomIdx, atom in enumerate(atoms):
-                if self.parameters[ruleIdx][atomIdx] < 0.00674:
-                    penalty = -1000 * -5
-                else:
-                    penalty = int(-1000 * math.log(self.parameters[ruleIdx][atomIdx]))
-                program += ':~ {}. [{}, {}, {}]\n'.format(atom, penalty, ruleIdx, atomIdx)
-
-        print("program:\n{}\n".format(program))
-        clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
-        models = []
-        # print("\nPi': \n{}".format(program))
-        clingo_control.add("base", [], program)
-        # print("point 3")
-        clingo_control.ground([("base", [])])
-        # print("point 4")
-        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)) if model.optimality_proven else None)
-        # print("point 5")
-        models = [[str(atom) for atom in model] for model in models]
-        # print("point 6")
-        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
-        return self.remove_duplicate_SM(models)
-
-    # compute P(O)
-    def inference_obs_exact(self, obs):
-        prob = 0
-        models = self.find_all_SM_under_obs(obs)
-        for I in models:
-            prob += self.prob_of_interpretation(I)
-        return prob
-
-    def gradient(self, ruleIdx, atomIdx, obs):
-        # we will compute P(I)/p_i where I satisfies obs and c=v_i
-        p_obs_i = 0
-        # we will compute P(I)/p_j where I satisfies obs and c=v_j for i!=j
-        p_obs_j = 0
-        # we will compute P(I) where I satisfies obs
-        p_obs = 0
-
-        # 1st, we generate all I that satisfies obs
-        models = self.find_k_SM_under_obs(obs, k=3)
-        # print("models are: {}".format(models))
-        # 2nd, we iterate over each model I, and check if I satisfies c=v_i
-        c_equal_vi = self.pc[ruleIdx][atomIdx]
-        # print("c_equal_vi is: {}".format(c_equal_vi))
-        p_i = self.parameters[ruleIdx][atomIdx]
-        # print("p_i is: {}".format(p_i))
-        for I in models:
-            p_I = self.prob_of_interpretation(I)
-            # print("p_I is: {}".format(p_I))
-            # print("I: {}\t p_I: {}\t p_i: {}".format(I,p_I,p_i))
-            p_obs += p_I
-            if c_equal_vi in I:
-                # if p_i == 0:
-                #     p_i = self.eps
-                p_obs_i += p_I/p_i
-            else:
-                for atomIdx2, p_j in enumerate(self.parameters[ruleIdx]):
-                    c_equal_vj = self.pc[ruleIdx][atomIdx2]
-                    if c_equal_vj in I:
-                        # if p_j == 0:
-                        #     p_j = self.eps
-                        p_obs_j += p_I/p_j
-
-        # 3rd, we compute gradient
-        # print("p_obs_i: {}\t p_obs_j: {}\t p_obs: {}".format(p_obs_i,p_obs_j,p_obs))
-        gradient = (p_obs_i-p_obs_j)/p_obs
-        # print("gradient is: {}\n".format(gradient))
-
-        return gradient
-
-    # gradients are stored in numpy array instead of list
-    # obs is a string
-    # def gradients_one_obs(self, obs):
-    #     gradients = [[0.0 for item in l] for l in self.parameters]
-    #     models = self.find_k_SM_under_obs(obs, k=3)
-    #     for ruleIdx,list_of_bools in enumerate(self.learnable):
-    #         for atomIdx, b in enumerate(list_of_bools):
-    #             if b == True:
-    #                 # print("ruleIdx: {}\t atomIdx: {}\t obs: {}".format(ruleIdx, atomIdx, obs))
-    #                 gradients[ruleIdx][atomIdx] = self.gradient(ruleIdx, atomIdx, obs)
-    #     return gradients
-
-    def mvppLearnRule(self, ruleIdx, models, probs):
-        """Return a np array denoting the gradients for the probabilities in rule ruleIdx
-
-        @param ruleIdx: an integer denoting a rule index
-        @param models: the list of models that satisfy an underlined observation O, each model is a list of string
-        @param probs: a list of probabilities, one for each model
-        """
-        
-        gradients = []
-        denominator = sum(probs)
-        # we compute the gradient for each p_i in the ruleIdx-th rule
-        for i, cEqualsVi in enumerate(self.pc[ruleIdx]):
-            numerator = 0
-            # we accumulate the numerator by looking at each model I that satisfies O
-            for modelIdx, model in enumerate(models):
-                # if I satisfies cEqualsVi
-                if cEqualsVi in model:
-                    if self.parameters[ruleIdx][i] != 0:
-                        numerator += probs[modelIdx] / self.parameters[ruleIdx][i]
-                    else:
-                        numerator += probs[modelIdx] / (self.parameters[ruleIdx][i] + self.eps)
-
-
-                # if I does not satisfy cEqualsVi
-                else:
-                    for atomIdx, atom in enumerate(self.pc[ruleIdx]):
-                        if atom in model:
-                            if self.parameters[ruleIdx][atomIdx]!=0:
-                                numerator -= probs[modelIdx] / self.parameters[ruleIdx][atomIdx]
-                            else:
-                                numerator -= probs[modelIdx] / (self.parameters[ruleIdx][atomIdx]+self.eps)
-
-            gradients.append(numerator / denominator)
-        # print(gradients)
-        return np.array(gradients)
-
-    def mvppLearn(self, models):
-        probs = [self.prob_of_interpretation(model) for model in models]
-        gradients = np.array([[0.0 for item in l] for l in self.parameters])
-
-        # we compute the gradients w.r.t. the probs in each rule
-        for ruleIdx,list_of_bools in enumerate(self.learnable):
-            gradients[ruleIdx] = self.mvppLearnRule(ruleIdx, models, probs)
-            for atomIdx, b in enumerate(list_of_bools):
-                if b == False:
-                    gradients[ruleIdx][atomIdx] = 0
-        # print(gradients)
-        return gradients
-
-    # gradients are stored in numpy array instead of list
-    # obs is a string
-    def gradients_one_obs(self, obs):
-        models = self.find_k_SM_under_obs(obs, k=0)
-        return self.mvppLearn(models)
-
-    # gradients are stored in numpy array instead of list
-    def gradients_multi_obs(self, list_of_obs):
-        # gradients = np.zeros(self.parameters.shape)
-        gradients = [[0.0 for item in l] for l in self.parameters]
-        for obs in list_of_obs:
-            # print("1")
-            # print(gradients)
-            # print("2")
-            # print(self.gradients_one_obs(obs))
-            gradients = [[c+d for c,d in zip(i,j)] for i,j in zip(gradients,self.gradients_one_obs(obs))]
-            # gradients += self.gradients_one_obs(obs)
-        #     print("3")
-        #     print(gradients)
-        # sys.exit()
-        return gradients
-
-    # list_of_obs is either a list of strings or a file containing observations separated by "#evidence"
-    def learn_exact(self, list_of_obs, lr=0.01, thres=0.0001, max_iter=None):
-        # if list_of_obs is an evidence file, we need to first turn it into a list of strings
-        if type(list_of_obs) is str and os.path.isfile(list_of_obs):
-            with open(list_of_obs, 'r') as f:
-                list_of_obs = f.read().strip().strip("#evidence").split("#evidence")
-        print("Start learning by exact computation with {} observations...\n\nInitial parameters: {}".format(len(list_of_obs), self.parameters))
-        # print(list_of_obs)
-        # sys.exit()
-        time_init = time.time()
-        check_continue = True
-        iteration = 1
-        while check_continue:
-            old_parameters = self.parameters
-            # print("===1===")
-            # print(self.parameters)
-            print("\n#### Iteration {} ####\n".format(iteration))
-            check_continue = False
-            # gradients_np = self.gradients_multi_obs(list_of_obs)
-            # print(self.gradients_multi_obs(list_of_obs))
-            dif = [[lr*grad for grad in l] for l in self.gradients_multi_obs(list_of_obs)]
-            # dif = lr * self.gradients_multi_obs(list_of_obs)
-            # print("dif :{}".format(dif))
-
-
-            for ruleIdx, list_of_bools in enumerate(self.learnable):
-            # 1st, we turn each gradient into [-0.2, 0.2]
-                for atomIdx, b in enumerate(list_of_bools):
-                    if b == True:
-                        if dif[ruleIdx][atomIdx] > 0.2 :
-                            dif[ruleIdx][atomIdx] = 0.2
-                        elif dif[ruleIdx][atomIdx] < -0.2:
-                            dif[ruleIdx][atomIdx] = -0.2
-
-
-            # self.parameters = self.parameters + dif
-            self.parameters = [[c+d for c,d in zip(i,j)] for i,j in zip(dif,self.parameters)]
-            self.normalize_probs()
-
-            # we termintate if the change of the parameters is lower than thres
-            # dif = np.array(self.parameters) - old_parameters
-            # print("1")
-            # print(old_parameters)
-            # print("2")
-            # print(self.parameters)
-            dif = [[abs(c-d) for c,d in zip(i,j)] for i,j in zip(old_parameters,self.parameters)]
-            # print("3")
-            # print(dif)
-            # sys.exit()
-            print("After {} seconds of training (in total)".format(time.time()-time_init))
-            print("Current parameters: {}".format(self.parameters))
-            maxdif = max([max(l) for l in dif])
-            print("Max change on probabilities: {}".format(maxdif))
-
-            iteration += 1
-            if maxdif > thres:
-                check_continue = True
-            if max_iter is not None:
-                if iteration > max_iter:
-                    check_continue = False
-        print("\nFinal parameters: {}".format(self.parameters))
-
-    ##############################
-    ####### Sampling Method ######
-    ##############################
-
-    # it will generate k sample stable models for a k-coherent program under a specific total choice
-    def k_sample(self):
-        asp_with_facts = self.asp
-        clingo_control = clingo.Control(["0", "--warn=none"])
-        models = []
-        for ruleIdx,list_of_atoms in enumerate(self.pc):
-            tmp = np.random.choice(list_of_atoms, 1, p=self.parameters[ruleIdx])
-            # print(tmp)
-            asp_with_facts += tmp[0]+".\n"
-        clingo_control.add("base", [], asp_with_facts)
-        clingo_control.ground([("base", [])])
-        result = clingo_control.solve(None, lambda model: models.append(model.symbols(shown=True)))
-        models = [[str(atom) for atom in model] for model in models]
-        # print("k")
-        # print(models)
-        return models
-
-    # it will generate k*num sample stable models
-    def sample(self, num=1):
-        models = []
-        for i in range(num):
-            models = models + self.k_sample()
-        # print("test")
-        # print(models)
-        return models
-
-    # it will generate at least num of samples that satisfy obs
-    def sample_obs(self, obs, num=50):
-        count = 0
-        models = []
-        while count < num:
-            asp_with_facts = self.asp
-            asp_with_facts += obs
-            clingo_control = clingo.Control(["0", "--warn=none"])
-            models_tmp = []
-            for ruleIdx,list_of_atoms in enumerate(self.pc):
-                # print("parameters before: {}".format(self.parameters[ruleIdx]))
-                # self.normalize_probs()
-                # print("parameters after: {}\n".format(self.parameters[ruleIdx]))
-                tmp = np.random.choice(list_of_atoms, 1, p=self.parameters[ruleIdx])
-                # print(tmp)
-                asp_with_facts += tmp[0]+".\n"
-            clingo_control.add("base", [], asp_with_facts)
+            clingo_control = clingo.Control()
+            clingo_control.add("base", [], lpmlnParser.lpmln_to_asp_parser(program_wo_input_rules))
             clingo_control.ground([("base", [])])
-            result = clingo_control.solve(None, lambda model: models_tmp.append(model.symbols(shown=True)))
-            if str(result) == "SAT":
-                models_tmp = [[str(atom) for atom in model] for model in models_tmp]
-                # print("models_tmp:")
-                # print(models_tmp)
-                count += len(models_tmp)
-                models = models + models_tmp
-                # print("count: {}".format(count))
-            elif str(result) == "UNSAT":
-                pass
-            else:
-                print("Error! The result of a clingo call is not SAT nor UNSAT!")
-        return models
+            symbols = [atom.symbol for atom in clingo_control.symbolic_atoms]
+            for atom in symbols:
+                if atom.name == "nn":
+                    arg1_of_nn = atom.arguments[0]
+                    nn_model_name = str(atom.arguments[1])
+                    predicate_name = str(arg1_of_nn.name)
+                    constants_input2nn = str(arg1_of_nn.arguments[:-1]).replace('[', '').replace(']','')
+                    
+                    # 4. We call the yolo function to get outputs
+                    # 4.1 we separate constants of the form "a, b, c" into [a, b, c]
+                    input_nn = constants_input2nn.split(", ")
+                    # 4.2 we replace each constant if it is in the constant2data mapping
+                    for i, constant in enumerate(input_nn):
+                        if constant in constant2data:
+                            input_nn[i] = constant2data[constant]
+                    # 4.3 we feed the constants to neural network model
+                    list_of_tuples = self.functions[nn_model_name](input_nn)
+                    # 4.4 we add soft rules to lpmln program according to NN outputs
+                    for one_tuple in list_of_tuples:
+                        tmp = ', '.join(map(str,one_tuple[:-1]))
+                        p = one_tuple[-1]
+                        if p == 1:
+                            w = ""
+                        elif p == 0:
+                            w = ":- "
+                        else:
+                            w = str(math.log(p/(1-p)))+" "
+                        rule = "{}{}({}, {}).\n".format(w, predicate_name, constants_input2nn, tmp)
+                        new_lpmln += rule
+            lpmln_filename = "lpmln{}.tmp".format(batch_i)
+            print("\n\nLPMLN program stored in {}:\n".format(lpmln_filename)+new_lpmln)
 
-    # we compute the gradients (numpy array) w.r.t. all probs in the ruleIdx-th rule
-    # given models that satisfy obs
-    def gradient_given_models(self, ruleIdx, models):
-        arity = len(self.parameters[ruleIdx])
+            # Clear the lpmln file
+            open(lpmln_filename, "w").close()
+            # Write the lpmln file
+            with open(lpmln_filename, "w") as f:
+                f.write(new_lpmln)
 
-        # we will compute N(O) and N(O,c=v_i)/p_i for each i
-        n_O = 0
-        n_i = [0]*arity
-
-        # 1st, we compute N(O)
-        n_O = len(models)
-
-        # 2nd, we compute N(O,c=v_i)/p_i for each i
-        for model in models:
-            for atomIdx, atom in enumerate(self.pc[ruleIdx]):
-                if atom in model:
-                    n_i[atomIdx] += 1
-        for atomIdx, p_i in enumerate(self.parameters[ruleIdx]):
-            # if p_i == 0:
-            #     p_i = self.eps
-            n_i[atomIdx] = n_i[atomIdx]/p_i
-        
-        # 3rd, we compute the derivative of L'(O) w.r.t. p_i for each i
-        tmp = np.array(n_i) * (-1)
-        summation = np.sum(tmp)
-        gradients = np.array([summation]*arity)
-        # print(summation)
-        # gradients = np.array([[summation for item in l] for l in self.parameters])
-        # print("init gradients: {}".format(gradients))
-        for atomIdx, p_i in enumerate(self.parameters[ruleIdx]):
-            gradients[atomIdx] = gradients[atomIdx] + 2* n_i[atomIdx]
-        gradients = gradients / n_O
-        # print("n_O: {}".format(n_O))
-        # print("n_i: {}\t n_O: {}\t gradients: {}".format(n_i, n_O, gradients))
-        return gradients
-
-
-    # gradients are stored in numpy array instead of list
-    # obs is a string
-    def gradients_one_obs_by_sampling(self, obs, num=50):
-        gradients = np.array([[0.0 for item in l] for l in self.parameters])
-        # 1st, we generate at least num of stable models that satisfy obs
-        models = self.sample_obs(obs=obs, num=num)
-
-        # 2nd, we compute the gradients w.r.t. the probs in each rule
-        for ruleIdx,list_of_bools in enumerate(self.learnable):
-            gradients[ruleIdx] = self.gradient_given_models(ruleIdx, models)
-            for atomIdx, b in enumerate(list_of_bools):
-                if b == False:
-                    gradients[ruleIdx][atomIdx] = 0
-        # print(gradients)
-        return gradients
-
-    # we compute the gradients (numpy array) w.r.t. all probs given list_of_obs
-    def gradients_multi_obs_by_sampling(self, list_of_obs, num=50):
-        gradients = np.array([[0.0 for item in l] for l in self.parameters])
-
-        # we itereate over all obs
-        for obs in list_of_obs:
-            # 1st, we generate at least num of stable models that satisfy obs
-            models = self.sample_obs(obs=obs, num=num)
-
-            # 2nd, we accumulate the gradients w.r.t. the probs in each rule
-            for ruleIdx,list_of_bools in enumerate(self.learnable):
-                gradients[ruleIdx] += self.gradient_given_models(ruleIdx, models)
-                for atomIdx, b in enumerate(list_of_bools):
-                    if b == False:
-                        gradients[ruleIdx][atomIdx] = 0
-        # print(gradients)
-        return gradients
-
-    # we compute the gradients (numpy array) w.r.t. all probs given list_of_obs
-    # while we generate at least one sample without considering probability distribution
-    def gradients_multi_obs_by_one_sample(self, list_of_obs):
-        gradients = np.array([[0.0 for item in l] for l in self.parameters])
-
-        # we itereate over all obs
-        for obs in list_of_obs:
-            # 1st, we generate one stable model that satisfy obs
-            models = self.find_one_SM_under_obs(obs=obs)
-
-            # 2nd, we accumulate the gradients w.r.t. the probs in each rule
-            for ruleIdx,list_of_bools in enumerate(self.learnable):
-                gradients[ruleIdx] += self.gradient_given_models(ruleIdx, models)
-                for atomIdx, b in enumerate(list_of_bools):
-                    if b == False:
-                        gradients[ruleIdx][atomIdx] = 0
-        # print(gradients)
-        return gradients
-
-    # list_of_obs is either a list of strings or a file containing observations separated by "#evidence"
-    def learn_by_sampling(self, list_of_obs, num_of_samples=50, lr=0.01, thres=0.0001, max_iter=None, num_pretrain=1):
-        # Step 0: Evidence Preprocessing: if list_of_obs is an evidence file, 
-        # we need to first turn it into a list of strings
-        if type(list_of_obs) is str and os.path.isfile(list_of_obs):
-            with open(list_of_obs, 'r') as f:
-                list_of_obs = f.read().strip().strip("#evidence").split("#evidence")
-
-        print("Start learning by sampling with {} observations...\n\nInitial parameters: {}".format(len(list_of_obs), self.parameters))
-        time_init = time.time()
-
-        # Step 1: Parameter Pre-training: we pretrain the parameters 
-        # so that it's easier to generate sample stable models
-        assert type(num_pretrain) is int
-        if num_pretrain >= 1:
-            print("\n#######################################################\nParameter Pre-training for {} iterations...\n#######################################################".format(num_pretrain))
-            for iteration in range(num_pretrain):
-                print("\n#### Iteration {} for Pre-Training ####\nGenerating 1 stable model for each observation...\n".format(iteration+1))
-                dif = lr * self.gradients_multi_obs_by_one_sample(list_of_obs)
-                self.parameters = (np.array(self.parameters) + dif).tolist()
-                self.normalize_probs()
-
-                print("After {} seconds of training (in total)".format(time.time()-time_init))
-                print("Current parameters: {}".format(self.parameters))
-
-        # Step 2: Parameter Training: we train the parameters using "list_of_obs until"
-        # (i) the max change on probabilities is lower than "thres", or
-        # (ii) the number of iterations is more than "max_iter"
-        print("\n#######################################################\nParameter Training for {} iterations or until converge...\n#######################################################".format(max_iter))
-        check_continue = True
-        iteration = 1
-        while check_continue:
-            print("\n#### Iteration {} ####".format(iteration))
-            old_parameters = np.array(self.parameters)            
-            check_continue = False
-
-            print("Generating {} stable model(s) for each observation...\n".format(num_of_samples))
-            dif = lr * self.gradients_multi_obs_by_sampling(list_of_obs, num=num_of_samples)
-
-            self.parameters = (np.array(self.parameters) + dif).tolist()
-            self.normalize_probs()
             
-            print("After {} seconds of training (in total)".format(time.time()-time_init))
-            print("Current parameters: {}".format(self.parameters))
+            if mode == "MAP":
+                print("LPMLN command line:")
+                print("lpmln_infer", lpmln_filename, "\n")
+                print("LPMLN outputs:")
+                subprocess.run(["lpmln_infer", lpmln_filename])
+            elif mode.startswith("EX"):
+                print("LPMLN command line:")
+                print("lpmln_infer", lpmln_filename, "{}".format(mode[2:].strip()), "-ex\n")
+                print("LPMLN outputs:")
+                subprocess.run(["lpmln_infer", lpmln_filename, "{}".format(mode[2:].strip()), "-ex"])
+            elif mode.startswith("APPROX"):
+                print("LPMLN command line:")
+                print("lpmln_infer", lpmln_filename, "{}".format(mode[2:].strip()), "-approx\n")
+                print("LPMLN outputs:")
+                subprocess.run(["lpmln_infer", lpmln_filename, "{}".format(mode[2:].strip()), "-approx"])
+            print("===================================================\n")
+    
+    def dataloader4singleFiles(self, pred_path_n):
+        import glob
+        from PIL import Image
+        import numpy as np
 
-            # we termintate if the change of the parameters is lower than thres
-            dif = np.array(self.parameters) - old_parameters
-            dif = abs(max(dif.min(), dif.max(), key=abs))
-            print("Max change on probabilities: {}".format(dif))
+        data = []
 
-            iteration += 1
-            if dif > thres:
-                check_continue = True
-            if max_iter is not None:
-                if iteration > max_iter:
-                    check_continue = False
+        pred_path_n = pred_path_n.strip().split('\n')
+        numOfPred = len(pred_path_n)
+        pred = [None] * numOfPred
+        path = [None] * numOfPred
+        n = [None] * numOfPred
+        files = [None] * numOfPred
+        for i in range(numOfPred):
+            pred[i], path[i], n[i] = pred_path_n[i].split(' ')
+            n[i] = int(n[i])
+            # sorted(glob.glob('*.png'))
+            files[i] = sorted(glob.glob(path[i]))
 
-        print("\nFinal parameters: {}".format(self.parameters))
+        # enumerate all possible tasks
+        numOfTasks = min(int(len(files[i])/n[i]) for i in range(numOfPred))
+        for i in range(numOfTasks):
+            mapping = {}
+            # we consider the i-th task
+            for j in range(numOfPred):
+                # we consider the j-th predicate
+                mapping[pred[j]] = []
+                for k in range(n[j]):
+                    path = files[j][i*n[j]+k]
+                    try:
+                        im=np.array(Image.open(path))
+                        mapping[pred[j]].append([im])
+                    except IOError:
+                        print("File {} is not an image".format(path))
+            data.append(mapping)
+
+        return data
