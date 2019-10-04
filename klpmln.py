@@ -87,7 +87,6 @@ class MVPP(object):
         return pc, parameters, learnable, asp, pi_prime, remain_probs
 
     def normalize_probs(self):
-        
         for ruleIdx, list_of_bools in enumerate(self.learnable):
             summation = 0
             # 1st, we turn each probability into [0+eps,1-eps]
@@ -191,9 +190,11 @@ class MVPP(object):
         models.sort()
         return list(models for models,_ in itertools.groupby(models))
 
-    # we assume obs is a string containing a valid Clingo program, 
-    # and each obs is written in constraint form
-    def find_all_opt_SM_under_obs(self, obs):
+    # Note that the MVPP program cannot contain weak constraints
+    def find_most_probable_SM_under_obs_noWC(self, obs):
+        """Return a list of stable models, each is a list of strings
+        @param obs: a string of a set of constraints/facts
+        """
         program = self.pi_prime + obs + '\n'
         # for each probabilistic rule with n atoms, add n weak constraints
         for ruleIdx, atoms in enumerate(self.pc):
@@ -204,19 +205,27 @@ class MVPP(object):
                     penalty = int(-1000 * math.log(self.parameters[ruleIdx][atomIdx]))
                 program += ':~ {}. [{}, {}, {}]\n'.format(atom, penalty, ruleIdx, atomIdx)
 
-        # print("program:\n{}\n".format(program))
+        print("program:\n{}\n".format(program))
         clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
         models = []
-        # print("\nPi': \n{}".format(program))
         clingo_control.add("base", [], program)
-        # print("point 3")
         clingo_control.ground([("base", [])])
-        # print("point 4")
         clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)) if model.optimality_proven else None)
-        # print("point 5")
         models = [[str(atom) for atom in model] for model in models]
-        # print("point 6")
-        # print("All stable models of Pi' under obs \"{}\" :\n{}\n".format(obs,models))
+        return self.remove_duplicate_SM(models)
+
+    def find_all_opt_SM_under_obs_WC(self, obs):
+        program = self.pi_prime + obs
+        clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
+        models = []
+        try:
+            clingo_control.add("base", [], program)
+        except:
+            print('\nSyntax Error in Program: Pi\': \n{}'.format(program))
+            sys.exit()
+        clingo_control.ground([("base", [])])
+        clingo_control.solve(None, lambda model: models.append(model.symbols(atoms=True)) if model.optimality_proven else None)
+        models = [[str(atom) for atom in model] for model in models]
         return self.remove_duplicate_SM(models)
 
     # compute P(O)
@@ -331,15 +340,14 @@ class MVPP(object):
     # gradients are stored in numpy array instead of list
     # obs is a string
     def gradients_one_obs(self, obs, opt=False):
-        models = []
-        if opt == False:
-            models = self.find_k_SM_under_obs(obs, k=0)
-        else:
+        """Return an np-array denoting the gradients
+        @param obs: a string for observation
+        @param opt: a Boolean denoting whether we use optimal stable models instead of stable models
+        """
+        if opt:
             models = self.find_all_opt_SM_under_obs(obs)
-        if len(models) == 0:
-            print(self.pi_prime)
-            print(obs)
-            sys.exit()
+        else:
+            models = self.find_k_SM_under_obs(obs, k=0)
         return self.mvppLearn(models)
 
     # gradients are stored in numpy array instead of list
