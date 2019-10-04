@@ -43,7 +43,7 @@ class MVPP(object):
                 lines = program.readlines()
                 # print("lines1: {}".format(lines))
         # if program is a string containing all rules of an LPMLN program
-        elif type(program) is str and program.strip().endswith("."):
+        elif type(program) is str and program.strip().endswith(('.', ']')):
             lines = program.split('\n')
             # print("lines2: {}".format(lines))
         else:
