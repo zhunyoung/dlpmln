@@ -204,7 +204,7 @@ class MVPP(object):
                     penalty = int(-1000 * math.log(self.parameters[ruleIdx][atomIdx]))
                 program += ':~ {}. [{}, {}, {}]\n'.format(atom, penalty, ruleIdx, atomIdx)
 
-        print("program:\n{}\n".format(program))
+        # print("program:\n{}\n".format(program))
         clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
         models = []
         # print("\nPi': \n{}".format(program))
