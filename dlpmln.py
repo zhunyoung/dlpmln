@@ -246,7 +246,7 @@ class DeepLPMLN(object):
             # Step 3: check whether each MVPP program is satisfied
             for programIdx, program in enumerate(mvppList):
                 # if the program has weak constraints
-                if re.search(r':~.+\.[ \t]*\[.+\]', program):
+                if re.search(r':~.+\.[ \t]*\[.+\]', program) or re.search(r':~.+\.[ \t]*\[.+\]', obsList[dataIdx]):
                     choiceRules = ''
                     for ruleIdx in range(self.mvpp['nnPrRuleNum']):
                         choiceRules += '1{' + '; '.join(self.mvpp['atom'][ruleIdx]) + '}1.\n'
