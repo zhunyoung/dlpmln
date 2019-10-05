@@ -37,3 +37,33 @@ class GridProbData():
 		self.valid_labels = output_data[int(length*0.6):int(length*0.8)]
 		self.test_data = input_data[int(length*0.8):]
 		self.test_labels = output_data[int(length*0.8):]
+def generate_weak_con_evidence(file):
+	gd = GridProbData(file)
+	test_data = gd.test_data
+	# labels = gd.test_labels
+	length = len(test_data)
+	end = "#evidence"
+	begin = ":- mistake."
+	external_begin = "sp(external, "
+	with open("data/evidence_test.txt","w") as f:
+		for l in range(length):
+			f.write(begin+"\n")
+			initial_nodes = np.where(test_data[l][edges_number:] == 1)[0]
+			probs_edges = test_data[l][:edges_number]
+			for n in initial_nodes:
+				f.write(external_begin+str(n)+").\n")
+			s =""
+			for i, p in enumerate(test_data[l][:edges_number]):
+			    if p == 0.512:
+			        # s += str(6)+","
+			        f.write(":~ nn_edge(g, {}, t). [{},{}]\n".format(i, 6, i))
+			    else:
+			        # s += str(2)+","
+			        f.write(":~ nn_edge(g, {}, t). [{},{}]\n".format(i, 2, i))
+			# print(":~ nn_edge(X).[{} X]\n".format(s))
+			f.write(end+"\n")
+			# break
+	print("done!")
+
+if __name__ == '__main__':
+	generate_weak_con_evidence("data/data.txt")
