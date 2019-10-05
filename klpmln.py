@@ -214,7 +214,10 @@ class MVPP(object):
         models = [[str(atom) for atom in model] for model in models]
         return self.remove_duplicate_SM(models)
 
-    def find_all_opt_SM_under_obs_WC(self, obs):
+    def find_all_opt_SM_under_obs_WC(self, obs): # TODO: not all SM
+        """ Return ...
+        
+        """
         program = self.pi_prime + obs
         clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
         models = []
@@ -345,7 +348,7 @@ class MVPP(object):
         @param opt: a Boolean denoting whether we use optimal stable models instead of stable models
         """
         if opt:
-            models = self.find_all_opt_SM_under_obs(obs)
+            models = self.find_all_opt_SM_under_obs_WC(obs)
         else:
             models = self.find_k_SM_under_obs(obs, k=0)
         return self.mvppLearn(models)
