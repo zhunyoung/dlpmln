@@ -112,14 +112,10 @@ class MVPP(object):
         # I must be a list of atoms, where each atom is a string
         while not isinstance(I[0], str):
             I = I[0]
-        # print("I is {}".format(I))
-        # print(self.pc)
         for ruleIdx,list_of_atoms in enumerate(self.pc):
             for atomIdx, atom in enumerate(list_of_atoms):
                 if atom in I:
                     prob = prob * self.parameters[ruleIdx][atomIdx]
-                    # print(prob)
-        # sys.exit()
         return prob
 
     # we assume obs is a string containing a valid Clingo program, 
@@ -214,9 +210,11 @@ class MVPP(object):
         models = [[str(atom) for atom in model] for model in models]
         return self.remove_duplicate_SM(models)
 
-    def find_all_opt_SM_under_obs_WC(self, obs): # TODO: not all SM
-        """ Return ...
-        
+    def find_all_opt_SM_under_obs_WC(self, obs):
+        """ Return a list of stable models, each is a list of strings
+        @param obs: a string of a set of constraints/facts
+
+        TODO: not all SM
         """
         program = self.pi_prime + obs
         clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
