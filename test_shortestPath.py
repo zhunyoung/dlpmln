@@ -1,12 +1,13 @@
+import random
 import sys
 import time
-import random
 
 import numpy as np
 from numpy.random import permutation
 import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
+from torch.autograd import Variable
 
 from dlpmln import DeepLPMLN
 
@@ -14,10 +15,12 @@ from dlpmln import DeepLPMLN
 # DeepLPMLN program
 #############################
 
-dprogram = '''
+nnRule = '''
 grid(g).
 nn(m(g, 24), nn_edge, [t, f]) :- grid(g). 
+'''
 
+aspRule = '''
 nn_edge(X) :- nn_edge(g,X,t).
 
 sp(0,1) :- nn_edge(0).
@@ -72,12 +75,12 @@ opt_con = '''
 :~ nn_edge(X). [1, X]
 '''
 
-#############################
-# Neural network model
-#############################
+
+########
+# Construct nnMapping and set optimizers
+########
 
 class FC(nn.Module):
-
     def __init__(self, *sizes):
         super(FC, self).__init__()
         layers = []
@@ -92,17 +95,13 @@ class FC(nn.Module):
     def forward(self, x):
         return self.nn(x)
 
-########
-# Construct model and set optimizer
-########
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 m = FC(40, 50, 50, 50, 50, 50, 24).to(device)
-optimizer = torch.optim.Adam(m.parameters(), lr=0.001)
-
+nnMapping = {"m":m}
+optimizers = {'m':torch.optim.Adam(m.parameters(), lr=0.001)}
 
 ######################################
-# Generate Dataset
+# Construct DataList and obsList
 ######################################
 
 class GridData():
@@ -120,14 +119,9 @@ class GridData():
 
                 inp = [int(x) for x in tokens[1].split('-')]
                 paths = tokens[2:]
-                # print(paths)
-                # sys.exit()
-                data.append(np.concatenate((to_one_hot(removed, 24, True), to_one_hot(inp, 16))))
-                pathind = 0
-                if len(paths) > 1:
-                    pathind = random.randrange(len(paths))
+                data.append(np.concatenate((self.to_one_hot(removed, 24, inv=True), self.to_one_hot(inp, 16))))
                 path = [int(x) for x in paths[0].split('-')]
-                labels.append(to_one_hot(path, 24))
+                labels.append(self.to_one_hot(path, 24))
 
 
         # We're going to split 60/20/20 train/test/validation
@@ -135,71 +129,36 @@ class GridData():
         train_inds = perm[:int(len(data)*0.6)]
         valid_inds = perm[int(len(data)*0.6):int(len(data)*0.8)]
         test_inds = perm[int(len(data)*0.8):]
-        self.data = np.array(data)
-        self.labels = np.array(labels)
-        self.train_data = self.data[train_inds, :]
-        self.valid_data = self.data[valid_inds, :]
-        self.test_data = self.data[test_inds, :]
-        self.train_labels = self.labels[train_inds, :]
-        self.valid_labels = self.labels[valid_inds, :]
-        self.test_labels = self.labels[test_inds, :]
+        data = np.array(data)
+        labels = np.array(labels)
 
-        # Count what part of the batch we're attempt
-        self.batch_ind = len(train_inds)
-        self.batch_perm = None
         np.random.seed()
 
         self.dic = {}
-        self.dic["train"] = self.train_data
-        self.dic["test"] = self.test_data
-        self.dic["valid"] = self.valid_data
+        self.dic["train"] = data[train_inds, :]
+        self.dic["test"] = data[test_inds, :]
+        self.dic["valid"] = data[valid_inds, :]
+        self.dic["train_label"] = labels[train_inds, :]
+        self.dic["test_label"] = labels[test_inds, :]
+        self.dic["valid_label"] = labels[valid_inds, :]
 
-        self.dic["train_label"] = self.train_labels
-        self.dic["test_label"] = self.test_labels
-
-    # REMOVE?
-    def get_batch(self, size):
-        # If we're out:
-        if self.batch_ind >= self.train_data.shape[0]:
-            # Rerandomize ordering
-            self.batch_perm = permutation(self.train_data.shape[0])
-            # Reset counter
-            self.batch_ind = 0
-
-        # If there's not enough
-        if self.train_data.shape[0] - self.batch_ind < size:
-            # Get what there is, append whatever else you need
-            ret_ind = self.batch_perm[self.batch_ind:]
-            d, l = self.train_data[ret_ind, :], self.train_labels[ret_ind, :]
-            size -= len(ret_ind)
-            self.batch_ind = self.train_data.shape[0]
-            nd, nl = self.get_batch(size)
-            return np.concatenate(d, nd), np.concatenate(l, nl)
-
-        # Normal case
-        ret_ind = self.batch_perm[self.batch_ind: self.batch_ind + size]
-        return self.train_data[ret_ind, :], self.train_labels[ret_ind, :]
-
-def to_one_hot(dense, n, inv=False):
-    one_hot = np.zeros(n)
-    one_hot[dense] = 1
-    if inv:
-        one_hot = (one_hot + 1) % 2
-    return one_hot
+    @staticmethod
+    def to_one_hot(dense, n, inv=False):
+        one_hot = np.zeros(n)
+        one_hot[dense] = 1
+        if inv:
+            one_hot = (one_hot + 1) % 2
+        return one_hot
 
 def generateDataset(inPath, outPath):
     grid_data = GridData(inPath)
     names = ["train", "test", "valid"]
     for name in names:
         fname = outPath+name+".txt"
-        # erase the content of each file
-        # open(fname, 'w').close()
         with open(fname, 'w') as f:
             for data in grid_data.dic[name].tolist():
                 removed = data[:24]
                 startEnd = data[24:]
-                # print(removed)
-                # print(startEnd)
                 removed = [i for i, x in enumerate(removed) if x == 0]
                 startEnd = [i for i, x in enumerate(startEnd) if x == 1]
                 evidence = ":- mistake.\n"
@@ -214,61 +173,53 @@ def generateDataset(inPath, outPath):
 
 dataset = generateDataset("data/shortestPath.data", "evidence/shorteatPath_")
 
+with open('evidence/shorteatPath_train.txt', 'r') as f:
+    obsList = f.read().strip().strip("#evidence").split("#evidence")
 
-sys.exit()
-
-
-
-
-
-
-
-
-use_cuda = False
-
-kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
-train_loader = torch.utils.data.DataLoader(
-	datasets.MNIST('../data', train=True, download=True,
-				   transform=transforms.Compose([
-					   transforms.ToTensor(),
-					   transforms.Normalize((0.1307,), (0.3081,))
-				   ])),
-	batch_size=2, shuffle=True, **kwargs)
-
-test_loader = torch.utils.data.DataLoader(
-	datasets.MNIST('../data', train=False, transform=transforms.Compose([
-					   transforms.ToTensor(),
-					   transforms.Normalize((0.1307,), (0.3081,))
-				   ])),
-	batch_size=1000, shuffle=True, **kwargs)
-
-m = Net().to(device)
-
-nnDic = {"m":m}
-optimizer = {'m':torch.optim.Adam(m.parameters(), lr=0.001)}
-
-obs = [""]
+with open('evidence/shorteatPath_test.txt', 'r') as f:
+    obsListTest = f.read().strip().strip("#evidence").split("#evidence")
 
 dataList = []
-# obstxt = ""
-obsList = []
-for dataIdx, data in enumerate(train_loader):
-	dataList.append({"m":{"i1":data[0][0].view(1, 1, 28, 28), "i2":data[0][1].view(1, 1, 28, 28)}})
-	obsList.append(":- not addition(i1, i2, {}).".format( data[1][0]+data[1][1]))
-# 	obstxt += "addition(i1, i2, {}).\n#evidence\n".format( data[1][0]+data[1][1])
-	
-# with open("evidence.txt", "w") as f:
-# 	f.write(obstxt)
+for data in dataset['train']:
+    dataList.append({'g': Variable(torch.from_numpy(data).float(), requires_grad=False)})
+
+dataListTest = []
+for data in dataset['test']:
+    dataListTest.append({'g': Variable(torch.from_numpy(data).float(), requires_grad=False)})
 
 
-dlpmlnObj = DeepLPMLN(dprogram, nnDic, optimizer)
+# 1234
+# dlpmlnObj = DeepLPMLN(nnRule+aspRule+remove_con+path_con+reach_con+opt_con, nnMapping, optimizers)
+# 234
+dlpmlnObj = DeepLPMLN(nnRule+aspRule+path_con+reach_con+opt_con, nnMapping, optimizers)
+# 23
+# dlpmlnObj = DeepLPMLN(nnRule+aspRule+path_con+reach_con, nnMapping, optimizers)
+# 2
+# dlpmlnObj = DeepLPMLN(nnRule+aspRule+path_con, nnMapping, optimizers)
 
-for i in range(1):
-	time1 = time.time()
-	dlpmlnObj.learn(dataList=dataList, obsList=obsList, epoch=1)
-	time2 = time.time()
-	dlpmlnObj.test_nn("m", test_loader)
-	print("--- train time: %s seconds ---" % (time2 - time1))
-	print("--- test time: %s seconds ---" % (time.time() - time2))
+# dlpmlnObj = DeepLPMLN(dprogram, nnMapping, optimizers)
+# print(dlpmlnObj.mvpp['program'])
+# print(dlpmlnObj.functions)
+# print(dlpmlnObj.nnOutputs)
 
-# print(dlpmlnObj.mvpp)
+mvppList = [remove_con, path_con, reach_con, remove_con+path_con, remove_con+reach_con, path_con+reach_con, remove_con+path_con+reach_con, remove_con+path_con+reach_con+opt_con]
+# mvppList = [remove_con+path_con+reach_con+opt_con]
+mvppList = [aspRule+i for i in mvppList]
+# print(mvppList[0])
+
+print('-------------------')
+for idx, constraint in enumerate(mvppList):
+    print('Constraint {} is\n{}\n-------------------'.format(idx+1, constraint))
+
+startTime = time.time()
+for i in range(500):
+    print('Epoch {}...'.format(i+1))
+    time1 = time.time()
+    dlpmlnObj.learn(dataList=dataList, obsList=obsList, epoch=1, opt=True)
+    time2 = time.time()
+    dlpmlnObj.testConstraint(dataList=dataListTest, obsList=obsListTest, mvppList=mvppList)
+    print("--- train time: %s seconds ---" % (time2 - time1))
+    print("--- test time: %s seconds ---" % (time.time() - time2))
+    print('--- total time from beginning: %s minutes ---' % int((time.time() - startTime)/60) )
+
+
