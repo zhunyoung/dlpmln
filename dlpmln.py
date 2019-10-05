@@ -108,7 +108,7 @@ class DeepLPMLN(object):
     def infer(self, dataDic, obs, mvpp=''):
         """
         @param dataDic: a dictionary that maps terms to tensors/np-arrays
-        @param obs: a list of strings, where each string is a set of constraints denoting an observation
+        @param obs: a string which is a set of constraints denoting an observation
         @param mvpp: an MVPP program used in inference
         """
 
@@ -135,7 +135,7 @@ class DeepLPMLN(object):
         return dmvpp.find_most_probable_SM_under_obs_noWC(obs=obs)
 
 
-    def learn(self, dataList, obsList, epoch):
+    def learn(self, dataList, obsList, epoch, opt=False):
         """
         @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
         @param obsList: a list of strings, where each string is a set of constraints denoting an observation
@@ -160,14 +160,11 @@ class DeepLPMLN(object):
                 for model in self.nnOutputs:
                     nnOutput[model] = {}
                     for vin in self.nnOutputs[model]:
-                        nnOutput[model][vin] = self.functions[model](data[vin])
+                        nnOutput[model][vin] = self.functions[model](data[vin].to(self.device))
                         self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
                         # initialize the gradients for each output
                         self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
-                # print(self.nnOutputs)
-                # print(self.nnGradients)
 
-                # print(self.mvpp['nnProb'])
                 # Step 2: replace the parameters in the MVPP program with nn outputs
                 for ruleIdx in range(self.mvpp['nnPrRuleNum']):
                     dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
@@ -175,9 +172,8 @@ class DeepLPMLN(object):
                         dmvpp.parameters[ruleIdx] = [dmvpp.parameters[ruleIdx][0], 1-dmvpp.parameters[ruleIdx][0]]
 
                 # Step 3: compute the gradients
-                # print(dmvpp.parameters)
                 dmvpp.normalize_probs()
-                gradients = dmvpp.gradients_one_obs(obsList[dataIdx])
+                gradients = dmvpp.gradients_one_obs(obsList[dataIdx], opt=opt)
 
                 # Step 4: update parameters in neural networks
                 gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
@@ -187,14 +183,16 @@ class DeepLPMLN(object):
                 # backpropogate
                 for m in nnOutput:
                     for t in nnOutput[m]:
-                        # nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),(1,10))), retain_graph=True)
-                        nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),nnOutput[m][t].shape)), retain_graph=True)
-                for opt in self.optimizers:
-                    self.optimizers[opt].step()
-                    self.optimizers[opt].zero_grad()
+                        if self.device.type == 'cuda':
+                            nnOutput[m][t].backward(torch.cuda.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),nnOutput[m][t].shape)), retain_graph=True)
+                        else:
+                            nnOutput[m][t].backward(torch.FloatTensor(np.reshape(np.array(self.nnGradients[m][t]),nnOutput[m][t].shape)), retain_graph=True)
+                for optimizer in self.optimizers:
+                    self.optimizers[optimizer].step()
+                    self.optimizers[optimizer].zero_grad()
 
                 # Step 5: update probabilities in normal prob. rules
-                pass
+                # pass
 
     def testNN(self, nn, testLoader):
         """
@@ -206,9 +204,7 @@ class DeepLPMLN(object):
         correct = 0
         with torch.no_grad():
             for data, target in testLoader:
-                # data, target = data.to(device), target.to(device)
-                output = self.functions[nn](data)
-                # test_loss += F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
+                output = self.functions[nn](data.to(self.device))
                 if self.k[nn] >2 :
                     pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
                     correct += pred.eq(target.view_as(pred)).sum().item()
@@ -228,37 +224,45 @@ class DeepLPMLN(object):
         for func in self.functions:
             self.functions[func].eval()
 
-        # we test for each DeepLPMLN program
+        # we count the correct prediction for each mvpp program
+        count = [0]*len(mvppList)
+
+        for dataIdx, data in enumerate(dataList):
+            # Step 1: get the output of each neural network
+            for model in self.nnOutputs:
+                for vin in self.nnOutputs[model]:
+                    self.nnOutputs[model][vin] = self.functions[model](data[vin].to(self.device)).view(-1).tolist()
+
+            # Step 2: turn the NN outputs into a set of ASP facts
+            aspFacts = ''
+            for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+                if len(probs) == 1:
+                    atomIdx = int(probs[0] < 0.5) # t is of index 0 and f is of index 1
+                else:
+                    atomIdx = probs.index(max(probs))
+                aspFacts += self.mvpp['atom'][ruleIdx][atomIdx] + '.\n'
+
+            # Step 3: check whether each MVPP program is satisfied
+            for programIdx, program in enumerate(mvppList):
+                # if the program has weak constraints
+                if re.search(r':~.+\.[ \t]*\[.+\]', program):
+                    choiceRules = ''
+                    for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                        choiceRules += '1{' + '; '.join(self.mvpp['atom'][ruleIdx]) + '}1.\n'
+                    mvpp = MVPP(program+choiceRules)
+                    models = mvpp.find_all_opt_SM_under_obs_WC(obs=obsList[dataIdx])
+                    models = [set(model) for model in models] # each model is a set of atoms
+                    targetAtoms = aspFacts.split('.\n')
+                    targetAtoms = set([atom.strip().replace(' ','') for atom in targetAtoms if atom.strip()])
+                    if any(targetAtoms.issubset(model) for model in models):
+                        count[programIdx] += 1
+                else:
+                    mvpp = MVPP(aspFacts + program)
+                    if mvpp.find_one_SM_under_obs(obs=obsList[dataIdx]):
+                        count[programIdx] += 1
         for programIdx, program in enumerate(mvppList):
-            mvpp = MVPP(program)
-            count = 0
-            for dataIdx, data in enumerate(dataList):
-                nnOutput = {}
-                # Step 1: get the output of each neural network
-                for model in self.nnOutputs:
-                    nnOutput[model] = {}
-                    for vin in self.nnOutputs[model]:
-                        nnOutput[model][vin] = self.functions[model](data[vin].to(self.device))
-                        self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
-                # print(self.nnOutputs)
-
-                # Step 2: turn the NN outputs into a set of ASP facts
-                aspFacts = ''
-                for ruleIdx in range(self.mvpp['nnPrRuleNum']):
-                    probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
-                    if len(probs) == 1:
-                        atomIdx = int(probs[0] > 0.5)
-                    else:
-                        atomIdx = probs.index(max(probs))
-                    aspFacts += self.mvpp['atom'][ruleIdx][atomIdx] + '.\n'
-                # print(aspFacts)
-
-                # Step 3: check if the mvpp program is satisfiable with the facts generated from NN outputs
-                mvpp.pi_prime += aspFacts
-                if mvpp.find_one_SM_under_obs(obs=obsList[dataIdx]):
-                    count += 1
-
-            print('The accuracy for the {}th program is {}'.format(programIdx+1, float(count)/len(dataList)))
+            print('The accuracy for constraint {} is {}'.format(programIdx+1, float(count[programIdx])/len(dataList)))
 
 
     def dataloader_error_checker(self, pred2data, preds):
@@ -312,7 +316,6 @@ class DeepLPMLN(object):
                 program_wo_input_rules += rule
             # we use lpmln2asp to turn lpmln to asp, and then use gringo to ground it
             lpmlnParser = lpmln_parser.lpmln_parser()
-            # print(lpmln_parser.lpmln_to_asp_parser(lpmln))
 
             clingo_control = clingo.Control()
             clingo_control.add("base", [], lpmlnParser.lpmln_to_asp_parser(program_wo_input_rules))
