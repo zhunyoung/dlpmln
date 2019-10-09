@@ -207,7 +207,7 @@ class DeepLPMLN(object):
                 output = self.functions[nn](data.to(self.device))
                 if self.k[nn] >2 :
                     pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
-                    correct += pred.eq(target.view_as(pred)).sum().item()
+                    correct += pred.eq(target.to(self.device).view_as(pred)).sum().item()
                 else: 
                     pass
         print("Test Accuracy on NN Only: {:.0f}%".format(100. * correct / len(testLoader.dataset)) )
