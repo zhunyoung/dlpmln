@@ -9,28 +9,55 @@ import numpy as np
 
 
 class DeepLPMLN(object):
-    def __init__(self, dprogram, functions, optimizers):
+    def __init__(self, dprogram, nnMapping, optimizers, dynamicMVPP=False, cpu=False):
 
         """
         @param dprogram: a string for a DeepLPMLN program
-        @param functions: a list of neural networks
+        @param nnMapping: a dictionary maps nn names to neural networks modules
+        @param optimizers: a dictionary maps nn names to their optimizers
+        @param dynamicMVPP: a Boolean denoting whether the MVPP program is dynamic according to each observation
+        @param cpu: a Boolean denoting whether the user wants to use CPU only
         """
+        self.device = torch.device('cuda' if torch.cuda.is_available() and not cpu else 'cpu')
+
         self.dprogram = dprogram
-        self.k = {} # k would be 1 or N (>=3); note that k=2 in theorey is implemented as k=1
-        self.e = {}
+        self.const = {} # the mapping from c to v for rule #const c=v.
+        self.k = {} # the mapping from nn name to an integer k; k would be 1 or N (>=3); note that k=2 in theorey is implemented as k=1
+        self.e = {} # the mapping from nn name to an integer e
+        self.normalProbs = None # record the probabilities from normal prob rules
         self.nnOutputs = {}
         self.nnGradients = {}
-        self.functions = functions
+        # self.nnMapping = nnMapping
+        self.nnMapping = {key : nnMapping[key].to(self.device) for key in nnMapping}
         self.optimizers = optimizers
+        self.dynamicMVPP = dynamicMVPP
         # self.mvpp is a dictionary consisting of 3 mappings: 
         # 1. 'program': a string denoting an MVPP program where the probabilistic rules generated from NN are followed by other rules;
         # 2. 'nnProb': a list of lists of tuples, each tuple is of the form (model, term, i, j)
         # 3. 'atom': a list of list of atoms, where each list of atoms is corresponding to a prob. rule
         # 4. 'nnPrRuleNum': an integer denoting the number of probabilistic rules generated from NN
         self.mvpp = {'nnProb': [], 'atom': [], 'nnPrRuleNum': 0, 'program': ''}
-        self.mvpp['program'] = self.parse()
+        self.mvpp['program'] = self.parse(obs='')
+        self.stableModels = [] # a list of stable models, where each stable model is a list
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def reset(self, obs):
+        """Reset the attributes for the DeepLPMLN object with a new observation
+        @assumption: the observation only contains 
+        """
+        self.const = {} # the mapping from c to v for rule #const c=v.
+        self.nnOutputs = {}
+        self.nnGradients = {}
+        self.mvpp = {'nnProb': [], 'atom': [], 'nnPrRuleNum': 0, 'program': ''}
+        self.mvpp['program'] = self.parse(obs=obs)
+
+    def constReplacement(self, vin):
+        """ Return a string obtained from vin by replacing all c with v if '#const c=v.' is present
+
+        @param vin: a string, which represents an input to a neural network in symbolic logic
+        """
+        vin = vin.split(',')
+        vin = [self.const[i.strip()] if i.strip() in self.const else i.strip() for i in vin]
+        return ','.join(vin)
 
     def nnAtom2MVPPrules(self, nnAtom):
         """
@@ -44,7 +71,8 @@ class DeepLPMLN(object):
         out = re.search(regex, nnAtom)
         model, vin = out.group(1).split('(')
         vin, e = vin.replace(')','').rsplit(',', 1)
-        e = int(e)
+        vin = self.constReplacement(vin)
+        e = int(self.constReplacement(e))
         pred = out.group(2)
         domain = out.group(3).replace('(', '').replace(')','').split(',')
         k = len(domain)
@@ -90,19 +118,32 @@ class DeepLPMLN(object):
         return mvppRules
 
 
-    def parse(self):
-        # 1. Generate grounded nn atoms
+    def parse(self, obs):
+        dprogram = self.dprogram + obs
+        # 1. Obtain all const definitions c for each rule #const c=v.
+        regex = '#const\s+(.+)=(.+).'
+        out = re.search(regex, dprogram)
+        if out:
+            self.const[out.group(1).strip()] = out.group(2).strip()
+        # 2. Generate prob. rules for grounded nn atoms
         clingo_control = clingo.Control(["--warn=none"])
-        # remove weak constraints
-        program = re.sub(r'\n:~ .+\.[ \t]*\[.+\]', '\n', self.dprogram)
-        clingo_control.add("base", [], program.replace('[', '(').replace(']', ')'))
+        # 2.1 remove weak constraints
+        program = re.sub(r'\n:~ .+\.[ \t]*\[.+\]', '\n', dprogram)
+        # 2.2 replace [] with ()
+        program = program.replace('[', '(').replace(']', ')')
+        # 2.3 use MVPP package to parse prob. rules and obtain ASP counter-part
+        mvpp = MVPP(program)
+        if mvpp.parameters and not self.normalProbs:
+            self.normalProbs = mvpp.parameters
+        pi_prime = mvpp.pi_prime
+        # 2.4 use clingo to generate all grounded NN atoms and turn them into prob. rules
+        clingo_control.add("base", [], pi_prime)
         clingo_control.ground([("base", [])])
         symbols = [atom.symbol for atom in clingo_control.symbolic_atoms]
         mvppRules = [self.nnAtom2MVPPrules(str(atom)) for atom in symbols if atom.name == 'nn']
         mvppRules = [rule for rules in mvppRules for rule in rules]
-
-        # 2. Combine neural rules with the other rules
-        lines = [line.strip() for line in self.dprogram.split('\n') if line and not line.startswith('nn(')]
+        # 3. Combine neural rules with the other rules
+        lines = [line.strip() for line in dprogram.split('\n') if line and not line.startswith('nn(')]
         return '\n'.join(mvppRules + lines)
         
     def infer(self, dataDic, obs, mvpp=''):
@@ -115,7 +156,7 @@ class DeepLPMLN(object):
         # Step 1: get the output of each neural network
         for model in self.nnOutputs:
             for vin in self.nnOutputs[model]:
-                self.nnOutputs[model][vin] = self.functions[model](dataDic[vin]).view(-1).tolist()
+                self.nnOutputs[model][vin] = self.nnMapping[model](dataDic[vin]).view(-1).tolist()
         print(self.nnOutputs)
 
         # Step 2: turn the NN outputs into a set of MVPP probabilistic rules
@@ -135,7 +176,7 @@ class DeepLPMLN(object):
         return dmvpp.find_most_probable_SM_under_obs_noWC(obs=obs)
 
 
-    def learn(self, dataList, obsList, epoch, opt=False):
+    def learn(self, dataList, obsList, epoch, opt=False, storeSM=False, mvpplr=0.01):
         """
         @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
         @param obsList: a list of strings, where each string is a set of constraints denoting an observation
@@ -143,37 +184,72 @@ class DeepLPMLN(object):
         """
         assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
 
-        # get the mvpp program by self.mvpp, so far self.mvpp is a string
-        dmvpp = MVPP(self.mvpp['program'])
+        # get the mvpp program by self.mvpp, so far self.mvpp['program'] is a string
+        if not self.dynamicMVPP:
+            dmvpp = MVPP(self.mvpp['program'])
 
         # we train all nerual networks
-        for func in self.functions:
-            self.functions[func].train()
+        for func in self.nnMapping:
+            self.nnMapping[func].train()
 
         # we train for epoch times of epochs
         for epochIdx in range(epoch):
             print('Training for epoch %d ...' % (epochIdx + 1))
             # for each training instance in the training data
             for dataIdx, data in enumerate(dataList):
+                if self.dynamicMVPP:
+                    self.reset(obs=obsList[dataIdx])
+                    dmvpp = MVPP(self.mvpp['program'])
+                # data is a dictionary. we need to edit its key if the key contains a defined const c
+                # where c is defined in rule #const c=v.
+                for key in data:
+                    data[self.constReplacement(key)] = data.pop(key)
                 nnOutput = {}
                 # Step 1: get the output of each neural network and initialize the gradients
                 for model in self.nnOutputs:
                     nnOutput[model] = {}
                     for vin in self.nnOutputs[model]:
-                        nnOutput[model][vin] = self.functions[model](data[vin].to(self.device))
+                        # if vin in data:
+                            # print('vin', vin)
+                            # print('model', model)
+                            # print('data[vin]', data[vin])
+                        nnOutput[model][vin] = self.nnMapping[model](data[vin].to(self.device))
                         self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
                         # initialize the gradients for each output
                         self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
 
-                # Step 2: replace the parameters in the MVPP program with nn outputs
+                # Step 2.1: replace the parameters in the MVPP program with nn outputs
                 for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+                    # print('test')
+                    # for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]:
+                    #     print(m, t, i, j)
+                    #     print(self.nnOutputs[m][t][i*self.k[model]+j])
+                    #     print(dmvpp.parameters)
+                    # print()
                     dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
                     if len(dmvpp.parameters[ruleIdx]) == 1:
                         dmvpp.parameters[ruleIdx] = [dmvpp.parameters[ruleIdx][0], 1-dmvpp.parameters[ruleIdx][0]]
 
+                # Step 2.2: replace the parameters for normal prob. rules in the MVPP program with updated probabilities
+                if self.normalProbs:
+                    for ruleIdx, probs in enumerate(self.normalProbs):
+                        dmvpp.parameters[self.mvpp['nnPrRuleNum']+ruleIdx] = probs
+
                 # Step 3: compute the gradients
                 dmvpp.normalize_probs()
-                gradients = dmvpp.gradients_one_obs(obsList[dataIdx], opt=opt)
+                if storeSM:
+                    try:
+                        models = self.stableModels[dataIdx]
+                        gradients = dmvpp.mvppLearn(models)
+                    except:
+                        if opt:
+                            models = dmvpp.find_all_opt_SM_under_obs_WC(obsList[dataIdx])
+                        else:
+                            models = dmvpp.find_k_SM_under_obs(obsList[dataIdx], k=0)
+                        self.stableModels.append(models)
+                        gradients = dmvpp.mvppLearn(models)
+                else:
+                    gradients = dmvpp.gradients_one_obs(obsList[dataIdx], opt=opt)
 
                 # Step 4: update parameters in neural networks
                 gradientsNN = gradients[:self.mvpp['nnPrRuleNum']].tolist()
@@ -192,25 +268,37 @@ class DeepLPMLN(object):
                     self.optimizers[optimizer].zero_grad()
 
                 # Step 5: update probabilities in normal prob. rules
-                # pass
+                if self.normalProbs:
+                    gradientsNormal = gradients[self.mvpp['nnPrRuleNum']:].tolist()
+                    for ruleIdx, ruleGradients in enumerate(gradientsNormal):
+                        ruleIdxMVPP = self.mvpp['nnPrRuleNum']+ruleIdx
+                        for atomIdx, b in enumerate(dmvpp.learnable[ruleIdxMVPP]):
+                            if b == True:
+                                dmvpp.parameters[ruleIdxMVPP][atomIdx] += mvpplr * gradientsNormal[ruleIdx][atomIdx]
+                    dmvpp.normalize_probs()
+                    self.normalProbs = dmvpp.parameters[self.mvpp['nnPrRuleNum']:]
 
     def testNN(self, nn, testLoader):
         """
         @nn is the name of the neural network to check the accuracy. 
         @testLoader is the input and output pairs.
         """
-        self.functions[nn].eval()
-        # test_loss = 0
+        self.nnMapping[nn].eval()
         correct = 0
+        total = 0
         with torch.no_grad():
             for data, target in testLoader:
-                output = self.functions[nn](data.to(self.device))
+                output = self.nnMapping[nn](data.to(self.device))
                 if self.k[nn] >2 :
                     pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
                     correct += pred.eq(target.to(self.device).view_as(pred)).sum().item()
+                    total += len(pred.tolist())
                 else: 
-                    pass
-        print("Test Accuracy on NN Only: {:.0f}%".format(100. * correct / len(testLoader.dataset)) )
+                    pred = np.array([int(i[0]<0.5) for i in output.tolist()])
+                    target = target.numpy()
+                    correct += (pred == target).sum()
+                    total += len(pred)
+        print("Test Accuracy on NN Only for {}: {:.0f}%".format(nn, 100. * correct / total) )
     
     def testConstraint(self, dataList, obsList, mvppList):
         """
@@ -221,17 +309,22 @@ class DeepLPMLN(object):
         assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
 
         # we evaluate all nerual networks
-        for func in self.functions:
-            self.functions[func].eval()
+        for func in self.nnMapping:
+            self.nnMapping[func].eval()
 
         # we count the correct prediction for each mvpp program
         count = [0]*len(mvppList)
 
         for dataIdx, data in enumerate(dataList):
+            # data is a dictionary. we need to edit its key if the key contains a defined const c
+            # where c is defined in rule #const c=v.
+            for key in data:
+                data[self.constReplacement(key)] = data.pop(key)
+
             # Step 1: get the output of each neural network
             for model in self.nnOutputs:
                 for vin in self.nnOutputs[model]:
-                    self.nnOutputs[model][vin] = self.functions[model](data[vin].to(self.device)).view(-1).tolist()
+                    self.nnOutputs[model][vin] = self.nnMapping[model](data[vin].to(self.device)).view(-1).tolist()
 
             # Step 2: turn the NN outputs into a set of ASP facts
             aspFacts = ''
@@ -336,7 +429,7 @@ class DeepLPMLN(object):
                         if constant in constant2data:
                             input_nn[i] = constant2data[constant]
                     # 4.3 we feed the constants to neural network model
-                    list_of_tuples = self.functions[nn_model_name](input_nn)
+                    list_of_tuples = self.nnMapping[nn_model_name](input_nn)
                     # 4.4 we add soft rules to lpmln program according to NN outputs
                     for one_tuple in list_of_tuples:
                         tmp = ', '.join(map(str,one_tuple[:-1]))
