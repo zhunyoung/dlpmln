@@ -8,6 +8,7 @@ from torchvision import datasets, transforms
 import random
 import numpy as np
 
+
 seed_num = 1
 random.seed(seed_num)
 np.random.seed(seed_num)

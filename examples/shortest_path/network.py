@@ -1,22 +1,10 @@
-from __future__ import print_function
-import argparse
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import datasets, transforms
-import random
-import numpy as np
 
-seed_num = 1
-random.seed(seed_num)
-np.random.seed(seed_num)
-torch.manual_seed(seed_num)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(seed_num)
-    torch.backends.cudnn.deterministic = True
+######################################
+# Structure of NN
+######################################
+
 class FC(nn.Module):
-
     def __init__(self, *sizes):
         super(FC, self).__init__()
         layers = []

@@ -6,42 +6,43 @@ import torch
 from torch.autograd import Variable
 import numpy as np
 import time
-from network import FC, device
-from ks_data import KsData
+from network import FC
+from dataGen import KsData
 import random
 
 
 dprogram='''
-
 % define k 
+#const k = 7.
 
 topk(k).
 nn(m(k,10), in, [t,f]) :- topk(k).
 
 % we make a mistake if the total weight of the chosen items exceeds maxweight 
-mistake :- #sum{1, I : in(k,I,t)} > 7.
-
+mistake :- #sum{1, I : in(k,I,t)} > k.
 '''
 
 dprogram_test='''
-
 % define k 
+#const k = 7.
 
 topk(k).
 % we make a mistake if the total weight of the chosen items exceeds maxweight 
-mistake :- #sum{1, I : in(k,I,t)} > 7.
-
+mistake :- #sum{1, I : in(k,I,t)} > k.
 '''
 
-m = FC(10, *[50, 50, 50, 50, 50], 10).to(device)
+m = FC(10, *[50, 50, 50, 50, 50], 10)
 
-functions = {'m': m}
+nnMapping = {'m': m}
 
 optimizer = {'m':torch.optim.Adam(m.parameters(), lr=0.001)}
 
-dlpmlnObj = DeepLPMLN(dprogram, functions, optimizer)
+dlpmlnObj = DeepLPMLN(dprogram, nnMapping, optimizer)
 
 dataset = KsData("data/data.txt",10)
+# print(dataset.train_labels.shape)
+# print(dataset.train_labels[0])
+# sys.exit()
 dataList = []
 obsList = []
 
@@ -69,9 +70,5 @@ with open("data/evidence_test.txt", 'r') as f:
 
 
 for i in range(200):
-	dlpmlnObj.learn(dataList = dataList, obsList = obsList, epoch=1, opt=True)
+	dlpmlnObj.learn(dataList = dataList, obsList = obsList, epoch=1, opt=True, storeSM=True)
 	dlpmlnObj.testConstraint(testData, testObsLost,[dprogram_test])
-
-
-
-
