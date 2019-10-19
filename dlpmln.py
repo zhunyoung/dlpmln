@@ -118,7 +118,7 @@ class DeepLPMLN(object):
         return mvppRules
 
 
-    def parse(self, obs):
+    def parse(self, obs=''):
         dprogram = self.dprogram + obs
         # 1. Obtain all const definitions c for each rule #const c=v.
         regex = '#const\s+(.+)=(.+).'
@@ -127,8 +127,9 @@ class DeepLPMLN(object):
             self.const[out.group(1).strip()] = out.group(2).strip()
         # 2. Generate prob. rules for grounded nn atoms
         clingo_control = clingo.Control(["--warn=none"])
-        # 2.1 remove weak constraints
+        # 2.1 remove weak constraints and comments
         program = re.sub(r'\n:~ .+\.[ \t]*\[.+\]', '\n', dprogram)
+        program = re.sub(r'\n%[^\n]*', '\n', program)
         # 2.2 replace [] with ()
         program = program.replace('[', '(').replace(']', ')')
         # 2.3 use MVPP package to parse prob. rules and obtain ASP counter-part
@@ -356,6 +357,117 @@ class DeepLPMLN(object):
                         count[programIdx] += 1
         for programIdx, program in enumerate(mvppList):
             print('The accuracy for constraint {} is {}'.format(programIdx+1, float(count[programIdx])/len(dataList)))
+
+    # def testObs(self, dataList, obsList):
+    #     """test the probability of each observation in obsList
+    #     @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
+    #     @param obsList: a list of strings, where each string is a set of constraints denoting an observation
+    #     """
+    #     assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
+
+    #     # get the mvpp program by self.mvpp, so far self.mvpp['program'] is a string
+    #     if not self.dynamicMVPP:
+    #         dmvpp = MVPP(self.mvpp['program'])
+
+    #     # we evaluate all nerual networks
+    #     for m in self.nnMapping:
+    #         self.nnMapping[m].eval()
+
+    #     # we count the correct prediction among all data instances
+    #     count = 0
+
+    #     for dataIdx, data in enumerate(dataList):
+    #         if self.dynamicMVPP:
+    #             self.reset(obs=obsList[dataIdx])
+    #             dmvpp = MVPP(self.mvpp['program'])
+    #         # data is a dictionary. we need to edit its key if the key contains a defined const c
+    #         # where c is defined in rule #const c=v.
+    #         for key in data:
+    #             data[self.constReplacement(key)] = data.pop(key)
+    #         nnOutput = {}
+    #         # Step 1: get the output of each neural network and initialize the gradients
+    #         for model in self.nnOutputs:
+    #             nnOutput[model] = {}
+    #             for vin in self.nnOutputs[model]:
+    #                 # if vin in data:
+    #                     # print('vin', vin)
+    #                     # print('model', model)
+    #                     # print('data[vin]', data[vin])
+    #                 nnOutput[model][vin] = self.nnMapping[model](data[vin].to(self.device))
+    #                 self.nnOutputs[model][vin] = nnOutput[model][vin].view(-1).tolist()
+    #                 # initialize the gradients for each output
+    #                 self.nnGradients[model][vin] = [0.0 for i in self.nnOutputs[model][vin]]
+
+    #         # Step 2.1: replace the parameters in the MVPP program with nn outputs
+    #         for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+    #             # print('test')
+    #             # for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]:
+    #             #     print(m, t, i, j)
+    #             #     print(self.nnOutputs[m][t][i*self.k[model]+j])
+    #             #     print(dmvpp.parameters)
+    #             # print()
+    #             dmvpp.parameters[ruleIdx] = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+    #             if len(dmvpp.parameters[ruleIdx]) == 1:
+    #                 dmvpp.parameters[ruleIdx] = [dmvpp.parameters[ruleIdx][0], 1-dmvpp.parameters[ruleIdx][0]]
+
+    #         # Step 2.2: replace the parameters for normal prob. rules in the MVPP program with updated probabilities
+    #         if self.normalProbs:
+    #             for ruleIdx, probs in enumerate(self.normalProbs):
+    #                 dmvpp.parameters[self.mvpp['nnPrRuleNum']+ruleIdx] = probs
+
+
+
+
+    #     assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
+
+    #     # we evaluate all nerual networks
+    #     for m in self.nnMapping:
+    #         self.nnMapping[m].eval()
+
+    #     # we count the correct prediction among all data instances
+    #     count = 0
+
+    #     for dataIdx, data in enumerate(dataList):
+    #         # data is a dictionary. we need to edit its key if the key contains a defined const c
+    #         # where c is defined in rule #const c=v.
+    #         for key in data:
+    #             data[self.constReplacement(key)] = data.pop(key)
+
+    #         # Step 1: get the output of each neural network
+    #         for model in self.nnOutputs:
+    #             for vin in self.nnOutputs[model]:
+    #                 self.nnOutputs[model][vin] = self.nnMapping[model](data[vin].to(self.device)).view(-1).tolist()
+
+    #         # Step 2: turn the NN outputs into a set of ASP facts
+    #         aspFacts = ''
+    #         for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+    #             probs = [self.nnOutputs[m][t][i*self.k[model]+j] for (m,t,i,j) in self.mvpp['nnProb'][ruleIdx]]
+    #             if len(probs) == 1:
+    #                 atomIdx = int(probs[0] < 0.5) # t is of index 0 and f is of index 1
+    #             else:
+    #                 atomIdx = probs.index(max(probs))
+    #             aspFacts += self.mvpp['atom'][ruleIdx][atomIdx] + '.\n'
+
+    #         # Step 3: check whether each MVPP program is satisfied
+    #         for programIdx, program in enumerate(mvppList):
+    #             # if the program has weak constraints
+    #             if re.search(r':~.+\.[ \t]*\[.+\]', program) or re.search(r':~.+\.[ \t]*\[.+\]', obsList[dataIdx]):
+    #                 choiceRules = ''
+    #                 for ruleIdx in range(self.mvpp['nnPrRuleNum']):
+    #                     choiceRules += '1{' + '; '.join(self.mvpp['atom'][ruleIdx]) + '}1.\n'
+    #                 mvpp = MVPP(program+choiceRules)
+    #                 models = mvpp.find_all_opt_SM_under_obs_WC(obs=obsList[dataIdx])
+    #                 models = [set(model) for model in models] # each model is a set of atoms
+    #                 targetAtoms = aspFacts.split('.\n')
+    #                 targetAtoms = set([atom.strip().replace(' ','') for atom in targetAtoms if atom.strip()])
+    #                 if any(targetAtoms.issubset(model) for model in models):
+    #                     count[programIdx] += 1
+    #             else:
+    #                 mvpp = MVPP(aspFacts + program)
+    #                 if mvpp.find_one_SM_under_obs(obs=obsList[dataIdx]):
+    #                     count[programIdx] += 1
+    #     for programIdx, program in enumerate(mvppList):
+    #         print('The accuracy for constraint {} is {}'.format(programIdx+1, float(count[programIdx])/len(dataList)))
 
 
     def dataloader_error_checker(self, pred2data, preds):
