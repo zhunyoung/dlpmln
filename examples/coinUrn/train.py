@@ -81,9 +81,9 @@ dlpmlnObj = DeepLPMLN(dprogram2, nnMapping, optimizers)
 
 dataList, obsList, m1dataset, m2dataset = fileToLists('./data/coinUrn_train.txt', trainLoader)
 
-print(trainLoader[0][0].size())
-print(trainLoader[0][1])
-sys.exit()
+# print(trainLoader[0][0].size())
+# print(trainLoader[0][1])
+# sys.exit()
 
 ########
 # Start training and testing
