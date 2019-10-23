@@ -46,16 +46,56 @@ def create_data_sample():
 
 
 
+# def format_dataList(obs,str_list):
+    
+    
+    
+    
+#     key1='{0},{1},{2}'.format(str_list[1],str_list[3],0)
+#     key2='{0},{1},{2}'.format(str_list[1],str_list[3],1)
+#     key3='{0},{1},{2}'.format(str_list[0],str_list[2],0)
+#     key4='{0},{1},{2}'.format(str_list[0],str_list[2],1)
+    
+    
+#     n_digits=10
+#     size=3
+    
+#     y=torch.zeros(size,n_digits)
+
+#     x=torch.LongTensor(size,1).random_()%n_digits
+#     x[0,0]=5
+#     y.scatter_(1,x,1)
+    
+#     #breakpoint()
+#     DATA1_idx=torch.LongTensor([[str_list[1]],[str_list[3]],[0]])
+#     DATA2_idx=torch.LongTensor([[str_list[1]],[str_list[3]],[1]])
+#     DATA3_idx=torch.LongTensor([[str_list[0]],[str_list[2]],[0]])
+#     DATA4_idx=torch.LongTensor([[str_list[0]],[str_list[2]],[1]])
+    
+    
+#     DATA1=torch.zeros(size,n_digits)
+#     DATA2=torch.zeros(size,n_digits)
+#     DATA3=torch.zeros(size,n_digits)
+#     DATA4=torch.zeros(size,n_digits)
+    
+#     # DATA1=DATA1.scatter_(1,DATA1_idx,1).view(30)
+#     # DATA2=DATA2.scatter_(1,DATA2_idx,1).view(30)
+#     # DATA3=DATA3.scatter_(1,DATA3_idx,1).view(30)
+#     # DATA4=DATA4.scatter_(1,DATA4_idx,1).view(30)
+
+#     DATA1=DATA1.scatter_(1,DATA1_idx,1).view(1,30)
+#     DATA2=DATA2.scatter_(1,DATA2_idx,1).view(1,30)
+#     DATA3=DATA3.scatter_(1,DATA3_idx,1).view(1,30)
+#     DATA4=DATA4.scatter_(1,DATA4_idx,1).view(1,30)
+    
+#     #breakpoint()
+#     dataList_dict={key1:DATA1,key2:DATA2,key3:DATA3,key4:DATA4}
+    
+    
+    
+#     return dataList_dict
+
 def format_dataList(obs,str_list):
-    
-    
-    
-    
-    key1='{0},{1},{2}'.format(str_list[1],str_list[3],0)
-    key2='{0},{1},{2}'.format(str_list[1],str_list[3],1)
-    key3='{0},{1},{2}'.format(str_list[0],str_list[2],0)
-    key4='{0},{1},{2}'.format(str_list[0],str_list[2],1)
-    
     
     n_digits=10
     size=3
@@ -87,6 +127,16 @@ def format_dataList(obs,str_list):
     DATA2=DATA2.scatter_(1,DATA2_idx,1).view(1,30)
     DATA3=DATA3.scatter_(1,DATA3_idx,1).view(1,30)
     DATA4=DATA4.scatter_(1,DATA4_idx,1).view(1,30)
+
+    # str_list[0] = 'num1_1'
+    # str_list[1] = 'num1_0'
+    # str_list[2] = 'num2_1'
+    # str_list[3] = 'num2_0'
+    
+    key1='{0},{1},{2}'.format('num1_0','num2_0',0)
+    key2='{0},{1},{2}'.format('num1_0','num2_0',1)
+    key3='{0},{1},{2}'.format('num1_1','num2_1',0)
+    key4='{0},{1},{2}'.format('num1_1','num2_1',1)
     
     #breakpoint()
     dataList_dict={key1:DATA1,key2:DATA2,key3:DATA3,key4:DATA4}
@@ -97,28 +147,51 @@ def format_dataList(obs,str_list):
 
 
 
+# def format_observations(obs,str_list):
+    
+#     obs_string= '''
+    
+#     num1(1,{0}).
+#     num1(0,{1}).
+    
+#     num2(1,{2}).
+#     num2(0,{3}).
+    
+#     carry(0,{4}).
+    
+#     :-not carry(2,{5}).
+#     :-not result(1,{6}).
+#     :-not result(0,{7}).
+#     '''.format(str_list[0],str_list[1],str_list[2],str_list[3],str_list[4],str_list[5],str_list[6],str_list[7])
+    
+#     return obs_string
 
+# def format_observations(obs,str_list):
+    
+#     obs_string= '''
+#     #const num1_1={0}.
+#     #const num1_0={1}.
+#     #const num2_1={2}.
+#     #const num2_0={3}.
+#     #const c={4}.
+
+#     :-not carry(2,{5}).
+#     :-not result(1,{6}).
+#     :-not result(0,{7}).
+#     '''.format(str_list[0],str_list[1],str_list[2],str_list[3],str_list[4],str_list[5],str_list[6],str_list[7])
+    
+#     return obs_string
 
 def format_observations(obs,str_list):
     
     obs_string= '''
-    
-    num1(1,{0}).
-    num1(0,{1}).
-    
-    num2(1,{2}).
-    num2(0,{3}).
-    
-    carry(0,{4}).
-    
-    :-not carry(2,{5}).
-    :-not result(1,{6}).
-    :-not result(0,{7}).
-    '''.format(str_list[0],str_list[1],str_list[2],str_list[3],str_list[4],str_list[5],str_list[6],str_list[7])
+    :-not carry(0,{}).
+    :-not carry(2,{}).
+    :-not result(1,{}).
+    :-not result(0,{}).
+    '''.format(str_list[4], str_list[5],str_list[6],str_list[7])
     
     return obs_string
-
-
 
 class add_test(Dataset):
     """Face Landmarks dataset."""

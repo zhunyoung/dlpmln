@@ -14,10 +14,11 @@ from data_function import create_data_sample,format_dataList,format_observations
 
 
 dprogram='''
-%1{num1(0, X): X=0..9}1.
-%1{num2(0, X): X=0..9}1.
-%1{carry(0,X): X=0..1}1.
-
+num1(1,num1_1).
+num1(0,num1_0).
+num2(1,num2_1).
+num2(0,num2_0).
+1{carry(0,Carry): Carry=0..1}1.
 nn(m1(A, B, Carry, 1), result, [0,1,2,3,4,5,6,7,8,9]) :- num1(P,A), num2(P,B), Carry=0..1.
 nn(m2(A, B, Carry, 1), carry, [0,1]) :- num1(P,A), num2(P,B), Carry=0..1.
 
@@ -59,8 +60,8 @@ dataList = []
 obsList = []
 
 
-train_size=10000
-test_size=1000
+train_size=100
+test_size=100
 
 add_test_dataset=add_test(test_size)
 
@@ -76,12 +77,13 @@ for i in range(train_size):
 
 
 
-dlpmlnObj = DeepLPMLN(dprogram, functions, optimizers, dynamicMVPP=True)
+dlpmlnObj = DeepLPMLN(dprogram, functions, optimizers, dynamicMVPP=False)
 # dlpmlnObj.device='cpu'
-
+print(dlpmlnObj.mvpp['program'])
 # print('k', dlpmlnObj.k)
 # print('nnOutputs', dlpmlnObj.nnOutputs)
 # print('functions', dlpmlnObj.functions)
+# print(dlpmlnObj.const)
 # sys.exit()
 
 print('training...')
