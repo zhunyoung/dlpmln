@@ -1,5 +1,5 @@
 import sys
-sys.path.append("../../")
+sys.path.append("../../../")
 import time
 
 import torch
@@ -14,9 +14,7 @@ from network import Net
 ######################################
 
 dprogram = '''
-img(i1). img(i2).
-addition(A,B,N) :- digit(A,0,N1), digit(B,0,N2), N=N1+N2.
-nn(m(X,1), digit, [0,1,2,3,4,5,6,7,8,9]) :- img(X).
+nn(m(i,1), addition, [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]).
 '''
 
 ########
