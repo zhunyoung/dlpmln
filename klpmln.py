@@ -47,7 +47,7 @@ class MVPP(object):
             lines = program.split('\n')
             # print("lines2: {}".format(lines))
         else:
-            print("Error! The MVPP program is not valid.")
+            print("Error! The MVPP program {} is not valid.".format(program))
             sys.exit()
 
         for line in lines:
@@ -201,7 +201,7 @@ class MVPP(object):
                     penalty = int(-1000 * math.log(self.parameters[ruleIdx][atomIdx]))
                 program += ':~ {}. [{}, {}, {}]\n'.format(atom, penalty, ruleIdx, atomIdx)
 
-        print("program:\n{}\n".format(program))
+        # print("program:\n{}\n".format(program))
         clingo_control = clingo.Control(['--warn=none', '--opt-mode=optN', '0'])
         models = []
         clingo_control.add("base", [], program)
@@ -327,6 +327,8 @@ class MVPP(object):
 
     def mvppLearn(self, models):
         probs = [self.prob_of_interpretation(model) for model in models]
+        # print(models)
+        # print(probs)
         gradients = np.array([[0.0 for item in l] for l in self.parameters])
 
         # we compute the gradients w.r.t. the probs in each rule
@@ -349,6 +351,9 @@ class MVPP(object):
             models = self.find_all_opt_SM_under_obs_WC(obs)
         else:
             models = self.find_k_SM_under_obs(obs, k=0)
+        # print('obs:\n{}'.format(obs))
+        # print('models:\n{}'.format(models))
+        # print('program:\n{}'.format(self.pi_prime))
         return self.mvppLearn(models)
 
     # gradients are stored in numpy array instead of list
