@@ -95,6 +95,7 @@ def create_data_sample():
     
 #     return dataList_dict
 
+
 def format_dataList(obs,str_list):
     
     n_digits=10
@@ -146,7 +147,6 @@ def format_dataList(obs,str_list):
     return dataList_dict
 
 
-
 # def format_observations(obs,str_list):
     
 #     obs_string= '''
@@ -159,22 +159,6 @@ def format_dataList(obs,str_list):
     
 #     carry(0,{4}).
     
-#     :-not carry(2,{5}).
-#     :-not result(1,{6}).
-#     :-not result(0,{7}).
-#     '''.format(str_list[0],str_list[1],str_list[2],str_list[3],str_list[4],str_list[5],str_list[6],str_list[7])
-    
-#     return obs_string
-
-# def format_observations(obs,str_list):
-    
-#     obs_string= '''
-#     #const num1_1={0}.
-#     #const num1_0={1}.
-#     #const num2_1={2}.
-#     #const num2_0={3}.
-#     #const c={4}.
-
 #     :-not carry(2,{5}).
 #     :-not result(1,{6}).
 #     :-not result(0,{7}).
@@ -210,7 +194,7 @@ class add_test(Dataset):
         return self.data[idx]
     
     def create_data(self):
-        
+        #breakpoint()
         for i in range(self.size):
             obs,str_list=create_data_sample()
         
@@ -237,9 +221,9 @@ class add_test(Dataset):
                 
             else:
                 if str_list[4]==0:
-                    key = keys[2]
+                    key = keys[0]
                 else:
-                    key = keys[3]
+                    key = keys[1]
             
     
             
@@ -252,21 +236,94 @@ class add_test(Dataset):
     
             
             y=torch.zeros(1,output_size)
-        
+            #breakpoint()
             d=torch.LongTensor(1,1).random_()%output_size
             d[0,0]=label_value
             y.scatter_(1,d,1)
             y=y.squeeze()
             y=y.argmax(dim=0,keepdim=True)
             #breakpoint()
-            self.data.append([x,y])
+            self.data.append([x.squeeze(),y])
 
         return None
         
 
 
         
+class carry_test(Dataset):
+    """Face Landmarks dataset."""
 
+    def __init__(self,size):
+        self.size=size
+        self.data=[]
+        self.create_data()
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, idx):
+
+        
+        return self.data[idx]
+    
+    def create_data(self):
+        #breakpoint()
+        for i in range(self.size):
+            obs,str_list=create_data_sample()
+        
+            data_list_sample=format_dataList(obs,str_list)
+            
+            sum_value=str_list[1]+str_list[3] +str_list[4]
+            
+            if len(str(sum_value))==1:
+                label_value=0
+            else:
+                label_value=1
+            
+            
+            
+            keys=[]
+            for key in data_list_sample.keys():
+                keys.append(key)
+    
+            
+            #breakpoint()
+            if len(keys)<4:
+                #breakpoint()
+                
+                if str_list[4]==0:
+                    key = keys[0]
+                else:
+                    key = keys[1]
+                
+                
+            else:
+                if str_list[4]==0:
+                    key = keys[0]
+                else:
+                    key = keys[1]
+            
+    
+            
+            x = data_list_sample[key]
+            
+            y_value=int(str_list[-1])
+            
+            
+            output_size=2
+    
+            
+            y=torch.zeros(1,output_size)
+            #breakpoint()
+            d=torch.LongTensor(1,1).random_()%output_size
+            d[0,0]=label_value
+            y.scatter_(1,d,1)
+            y=y.squeeze()
+            y=y.argmax(dim=0,keepdim=True)
+            #breakpoint()
+            self.data.append([x.squeeze(),y])
+
+        return None
 
 
 

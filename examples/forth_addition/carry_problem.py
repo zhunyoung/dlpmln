@@ -60,7 +60,7 @@ dataList = []
 obsList = []
 
 
-train_size=100
+train_size=1000
 test_size=100
 
 add_test_dataset=add_test(test_size)
@@ -79,7 +79,7 @@ for i in range(train_size):
 
 dlpmlnObj = DeepLPMLN(dprogram, functions, optimizers, dynamicMVPP=False)
 # dlpmlnObj.device='cpu'
-print(dlpmlnObj.mvpp['program'])
+# print(dlpmlnObj.mvpp['program'])
 # print('k', dlpmlnObj.k)
 # print('nnOutputs', dlpmlnObj.nnOutputs)
 # print('functions', dlpmlnObj.functions)
@@ -91,7 +91,7 @@ print('training...')
 # print(dataList[0])
 # sys.exit()
 
-for i in range(1):
+for i in range(5):
 	time1 = time.time()
 	dlpmlnObj.learn(dataList=dataList, obsList=obsList, epoch=1)
 	time2 = time.time()
