@@ -76,10 +76,6 @@ def generateDataset(inPath, outPath):
 # construct the dataset (a dictionary)
 dataset = generateDataset("data/shortestPath.data", "evidence/shorteatPath_")
 
-print(dataset['valid_label'].shape)
-import sys
-sys.exit()
-
 obsList = []
 with open('evidence/shorteatPath_train.txt', 'r') as f:
     obsList = f.read().strip().strip("#evidence").split("#evidence")
