@@ -9,16 +9,16 @@ import numpy as np
 
 
 class DeepLPMLN(object):
-    def __init__(self, dprogram, nnMapping, optimizers, dynamicMVPP=False, cpu=False):
+    def __init__(self, dprogram, nnMapping, optimizers, gpu=True):
 
         """
         @param dprogram: a string for a DeepLPMLN program
         @param nnMapping: a dictionary maps nn names to neural networks modules
         @param optimizers: a dictionary maps nn names to their optimizers
-        @param dynamicMVPP: a Boolean denoting whether the MVPP program is dynamic according to each observation
-        @param cpu: a Boolean denoting whether the user wants to use CPU only
+        # @param dynamicMVPP: a Boolean denoting whether the MVPP program is dynamic according to each observation
+        @param gpu: a Boolean denoting whether the user wants to use GPU for training and testing
         """
-        self.device = torch.device('cuda' if torch.cuda.is_available() and not cpu else 'cpu')
+        self.device = torch.device('cuda' if torch.cuda.is_available() and gpu else 'cpu')
 
         self.dprogram = dprogram
         self.const = {} # the mapping from c to v for rule #const c=v.
@@ -30,7 +30,7 @@ class DeepLPMLN(object):
         # self.nnMapping = nnMapping
         self.nnMapping = {key : nnMapping[key].to(self.device) for key in nnMapping}
         self.optimizers = optimizers
-        self.dynamicMVPP = dynamicMVPP
+        # self.dynamicMVPP = dynamicMVPP
         # self.mvpp is a dictionary consisting of 3 mappings: 
         # 1. 'program': a string denoting an MVPP program where the probabilistic rules generated from NN are followed by other rules;
         # 2. 'nnProb': a list of lists of tuples, each tuple is of the form (model, term, i, j)
@@ -40,15 +40,15 @@ class DeepLPMLN(object):
         self.mvpp['program'] = self.parse(obs='')
         self.stableModels = [] # a list of stable models, where each stable model is a list
 
-    def reset(self, obs):
-        """Reset the attributes for the DeepLPMLN object with a new observation
-        @assumption: the observation only contains 
-        """
-        self.const = {} # the mapping from c to v for rule #const c=v.
-        self.nnOutputs = {}
-        self.nnGradients = {}
-        self.mvpp = {'nnProb': [], 'atom': [], 'nnPrRuleNum': 0, 'program': ''}
-        self.mvpp['program'] = self.parse(obs=obs)
+    # def reset(self, obs):
+    #     """Reset the attributes for the DeepLPMLN object with a new observation
+    #     @assumption: the observation only contains 
+    #     """
+    #     self.const = {} # the mapping from c to v for rule #const c=v.
+    #     self.nnOutputs = {}
+    #     self.nnGradients = {}
+    #     self.mvpp = {'nnProb': [], 'atom': [], 'nnPrRuleNum': 0, 'program': ''}
+    #     self.mvpp['program'] = self.parse(obs=obs)
 
     def constReplacement(self, vin):
         """ Return a string obtained from vin by replacing all c with v if '#const c=v.' is present
@@ -177,7 +177,7 @@ class DeepLPMLN(object):
         return dmvpp.find_most_probable_SM_under_obs_noWC(obs=obs)
 
 
-    def learn(self, dataList, obsList, epoch, opt=False, storeSM=False, mvpplr=0.01):
+    def learn(self, dataList, obsList, epoch, opt=False, storeSM=False, mvpplr=0.01, accEpoch=0):
         """
         @param dataList: a list of dictionaries, where each dictionary maps terms to tensors/np-arrays
         @param obsList: a list of strings, where each string is a set of constraints denoting an observation
@@ -186,8 +186,9 @@ class DeepLPMLN(object):
         assert len(dataList) == len(obsList), 'Error: the length of dataList does not equal to the length of obsList'
 
         # get the mvpp program by self.mvpp, so far self.mvpp['program'] is a string
-        if not self.dynamicMVPP:
-            dmvpp = MVPP(self.mvpp['program'])
+        dmvpp = MVPP(self.mvpp['program'])
+        # if not self.dynamicMVPP:
+        #     dmvpp = MVPP(self.mvpp['program'])
 
         # we train all nerual networks
         for func in self.nnMapping:
@@ -195,12 +196,12 @@ class DeepLPMLN(object):
 
         # we train for epoch times of epochs
         for epochIdx in range(epoch):
-            print('Training for epoch %d ...' % (epochIdx + 1))
+            # print('Training for epoch %d ...' % (epochIdx + 1))
             # for each training instance in the training data
             for dataIdx, data in enumerate(dataList):
-                if self.dynamicMVPP:
-                    self.reset(obs=obsList[dataIdx])
-                    dmvpp = MVPP(self.mvpp['program'])
+                # if self.dynamicMVPP:
+                #     self.reset(obs=obsList[dataIdx])
+                #     dmvpp = MVPP(self.mvpp['program'])
                 # data is a dictionary. we need to edit its key if the key contains a defined const c
                 # where c is defined in rule #const c=v.
                 for key in data:
@@ -279,6 +280,11 @@ class DeepLPMLN(object):
                     dmvpp.normalize_probs()
                     self.normalProbs = dmvpp.parameters[self.mvpp['nnPrRuleNum']:]
 
+                # Step 6: show training accuracy
+                if accEpoch !=0 and (dataIdx+1) % accEpoch == 0:
+                    print('Training accuracy at interation {}:'.format(dataIdx+1))
+                    self.testConstraint(dataList, obsList, [self.mvpp['program']])
+
     def testNN(self, nn, testLoader):
         """
         @nn is the name of the neural network to check the accuracy. 
@@ -297,7 +303,8 @@ class DeepLPMLN(object):
                 else: 
                     pred = np.array([int(i[0]<0.5) for i in output.tolist()])
                     target = target.numpy()
-                    correct += (pred == target).sum()
+                    # correct += (pred == target).sum()
+                    correct += (pred.reshape(target.shape) == target).sum()
                     total += len(pred)
         print("Test Accuracy on NN Only for {}: {:.0f}%".format(nn, 100. * correct / total) )
     
